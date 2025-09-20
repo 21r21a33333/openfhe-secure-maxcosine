@@ -77,19 +77,6 @@ The implementation uses `tbb::parallel_reduce` to distribute the similarity comp
 - **Scalability**: Automatically adapts to available CPU cores
 - **Fault Tolerance**: Built-in exception handling and thread safety
 
-## Performance Comparison
-
-### oneTBB Parallel Implementation vs Linear Search
-
-The following table compares the performance of the **oneTBB parallel implementation** against the **traditional linear search** across different dataset sizes:
-
-| Dataset Size | Linear Search Time (ms) | oneTBB Search Time (ms) |
-| ------------ | ----------------------- | ----------------------- |
-| 1,000        | 0.473916                | 1.32071                 |
-| 10,000       | 8.06217                 | 1.93463                 |
-| 100,000      | 75.452                  | 7.49996                 |
-| 1,000,000    | 8560.5                  | 588.362                 |
-
 ### Performance Analysis
 
 #### oneTBB Parallel Implementation Results:
