@@ -21,6 +21,8 @@ struct UserSession {
   // encrypted DB vectors stored under jointPublic (one ciphertext per DB
   // vector)
   Ciphertext<DCRTPoly> encryptedVector;
+  // encrypted 1
+  Ciphertext<DCRTPoly> encryptedOne;
 };
 
 //
@@ -32,13 +34,11 @@ struct UserSession {
 // required.
 inline CryptoContext<DCRTPoly>
 InitCKKSContext(usint multiplicativeDepth = MULT_DEPTH,
-                usint scalingModSize = SCALE_MOD,
-                usint batchSize = VECTOR_DIM) {
+                usint scalingModSize = SCALE_MOD) {
   CCParams<CryptoContextCKKSRNS> parameters;
   parameters.SetSecurityLevel(HEStd_128_classic);
   parameters.SetMultiplicativeDepth(multiplicativeDepth);
   parameters.SetScalingModSize(scalingModSize);
-  parameters.SetBatchSize(batchSize);
 
   CryptoContext<DCRTPoly> cc = GenCryptoContext(parameters);
   cc->Enable(PKE);
@@ -121,6 +121,11 @@ public:
     UserSession s;
     s.jointPublic = kp2.publicKey;
     s.serverSecret = kp2.secretKey;
+
+    // create a plain text with VECTOR_DIM {}
+    Plaintext p =
+        cc_->MakeCKKSPackedPlaintext(std::vector<double>(VECTOR_DIM, 1.0));
+    s.encryptedOne = cc_->Encrypt(kp2.publicKey, p);
     sessions_[userId] = std::move(s);
 
     // Return user secret to the caller (simulate handing to user).
@@ -153,24 +158,6 @@ public:
     sess.encryptedVector = ct;
 
     return true;
-  }
-
-  // Server-side: produce server partial decryption shares for each
-  // inner-product ciphertext. Returns vector of ciphertext partial shares (one
-  // per input ciphertext).
-  std::pair<bool, Ciphertext<DCRTPoly>>
-  ServerPartialDecrypt(const std::string &userId,
-                       const Ciphertext<DCRTPoly> &ciphertext) {
-    Ciphertext<DCRTPoly> partial;
-    auto it = sessions_.find(userId);
-    if (it == sessions_.end()) {
-      std::cerr << "[store] unknown userId: " << userId << "/n";
-      return {false, partial};
-    }
-    UserSession &sess = it->second;
-
-    return {true,
-            cc_->MultipartyDecryptMain({ciphertext}, sess.serverSecret)[0]};
   }
 
   // Utility: expose joint public key for a user (so the real user can encrypt

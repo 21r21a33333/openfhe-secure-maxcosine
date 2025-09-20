@@ -1,11 +1,9 @@
 #include "../include/config.h"
 #include "../include/openFHE_lib.h"
 #include "../include/store.h"
-#include "oneapi/tbb/task_arena.h"
 #include <chrono>
 #include <fstream>
 #include <iostream>
-#include <numeric>
 #include <tbb/blocked_range.h>
 #include <tbb/parallel_reduce.h>
 
@@ -70,24 +68,39 @@ int main(int argc, char *argv[]) {
     store.EncryptAndStoreDBVector(userId, dbVectors[i]);
   }
 
+  auto encQuery = cc->MakeCKKSPackedPlaintext(queryVector);
   auto searchStart = std::chrono::high_resolution_clock::now();
-
   struct Result {
     double similarity;
-    size_t index;
+    string userId;
   };
 
+  std::vector<std::pair<string, UserSession>> sessionVec(
+      store.sessions_.begin(), store.sessions_.end());
+
   Result best = tbb::parallel_reduce(
-      tbb::blocked_range<size_t>(0, dbVectors.size()),
-      Result{-1.0, 0}, // initial value
+      tbb::blocked_range<size_t>(0, sessionVec.size()), Result{-1.0, ""},
       [&](const tbb::blocked_range<size_t> &r, Result localBest) -> Result {
-        for (size_t i = r.begin(); i < r.end(); i++) {
-          double similarity =
-              std::inner_product(queryVector.begin(), queryVector.end(),
-                                 dbVectors[i].begin(), 0.0);
-          if (similarity > localBest.similarity) {
-            localBest.similarity = similarity;
-            localBest.index = i;
+        for (size_t i = r.begin(); i < r.end(); ++i) {
+          const auto &[userId, sess] = sessionVec[i];
+          // Homomorphic elementwise multiplication
+          Ciphertext<DCRTPoly> encProduct =
+              cc->EvalMult(encQuery, sess.encryptedVector);
+
+          // Sum all slots (this gives the dot product)
+          for (int j = 1; j < int(VECTOR_DIM); j *= 2) {
+            encProduct = cc->EvalAdd(encProduct, cc->EvalRotate(encProduct, j));
+          }
+
+          // Return the result where sess.encryptedOne == encProduct
+          // (pointer comparison, as Ciphertext is a shared_ptr)
+          if (sess.encryptedOne == encProduct) {
+            // We don't have a similarity value, but we can set a dummy value
+            // (e.g., 1.0)
+            localBest.similarity = 1.0;
+            localBest.userId = userId;
+            // Since we found a match, we can break early
+            break;
           }
         }
         return localBest;
@@ -95,13 +108,12 @@ int main(int argc, char *argv[]) {
       [](const Result &a, const Result &b) -> Result {
         return (a.similarity > b.similarity) ? a : b;
       });
-
   auto searchEnd = std::chrono::high_resolution_clock::now();
   std::chrono::duration<double, std::milli> searchDuration =
       searchEnd - searchStart;
 
   std::cout << "Maximum cosine similarity is " << best.similarity
-            << " at index " << best.index << "\n";
+            << " at index " << best.userId << "\n";
   std::cout << "Search time: " << searchDuration.count() << " ms" << "\n";
 
   return 0;

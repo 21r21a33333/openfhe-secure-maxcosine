@@ -1,46 +1,24 @@
 #include "../include/config.h"
 #include "../include/openFHE_lib.h"
-#include "oneapi/tbb/task_arena.h"
+#include "../include/store.h"
 #include <chrono>
+#include <cmath>
 #include <fstream>
 #include <iostream>
-#include <numeric>
 #include <tbb/blocked_range.h>
 #include <tbb/parallel_reduce.h>
 
 using namespace lbcrypto;
 using namespace std;
 
+// Entry point of the application that orchestrates the flow
+
 int main(int argc, char *argv[]) {
   cout << "Setting up parameters..." << "\n";
+  CryptoContext<DCRTPoly> cc = InitCKKSContext();
+  InMemoryStore store(cc);
 
-  CCParams<CryptoContextCKKSRNS> parameters;
-  parameters.SetSecurityLevel(HEStd_128_classic);
-  parameters.SetMultiplicativeDepth(MULT_DEPTH);
-  parameters.SetScalingModSize(SCALE_MOD);
-
-  CryptoContext<DCRTPoly> cc = GenCryptoContext(parameters);
-  cc->Enable(PKE);
-  cc->Enable(KEYSWITCH);
-  cc->Enable(LEVELEDSHE);
-  cc->Enable(ADVANCEDSHE);
-
-  size_t batchSize = cc->GetEncodingParams()->GetBatchSize();
-
-  cout << "Generating keys..." << "\n";
-  auto keyPair = cc->KeyGen();
-  auto pk = keyPair.publicKey;
-  auto sk = keyPair.secretKey;
-
-  cc->EvalMultKeyGen(sk);
-  vector<int> binaryRotationFactors;
-  for (int i = 1; i < int(batchSize); i *= 2) {
-    binaryRotationFactors.push_back(i);
-    binaryRotationFactors.push_back(-i);
-  }
-  cc->EvalRotateKeyGen(sk, binaryRotationFactors);
-
-  // ---------------------- Read Vectors -----------------------
+  // Begin reading in vectors from input file
   cout << "Reading in vectors..." << "\n";
   ifstream fileStream;
   if (argc > 1) {
@@ -69,50 +47,56 @@ int main(int argc, char *argv[]) {
     for (size_t j = 0; j < VECTOR_DIM; j++) {
       fileStream >> dbVectors[i][j];
     }
-    OpenFHEImpl::plaintextNormalize(dbVectors[i], VECTOR_DIM);
   }
   fileStream.close();
+  // End reading in vectors from input file
 
-  // ------------------ Encrypt Vectors -----------------------
-  cout << "Encrypting vectors..." << "\n";
-  auto encQuery = OpenFHEImpl::encryptFromVector(cc, pk, queryVector);
-
-  vector<Ciphertext<DCRTPoly>> encDBVectors(numVectors);
+  // Diagonal MVM implementation goes below
+  // queryVector is 1-D of length 512, already normalized
+  // Compute the matrix-vector product of dbVectors times queryVector in the
+  // encrypted domain
+  cout << "Beginning implementation..." << "\n";
+  // ----- Create sessions and store vectors -----
+  vector<PrivateKey<DCRTPoly>> userSecrets(numVectors);
   for (size_t i = 0; i < numVectors; i++) {
-    encDBVectors[i] = OpenFHEImpl::encryptFromVector(cc, pk, dbVectors[i]);
+    string userId = "user_" + to_string(i);
+    auto [ok, userSk] = store.CreateUserSession(userId);
+    if (!ok) {
+      cerr << "Failed to create session for " << userId << "\n";
+      return 1;
+    }
+    userSecrets[i] = userSk;
+    store.EncryptAndStoreDBVector(userId, dbVectors[i]);
   }
 
-  // ------------------ Homomorphic Dot Product ----------------
-  cout << "Computing encrypted dot products..." << "\n";
+  auto encQuery = cc->MakeCKKSPackedPlaintext(queryVector);
   auto searchStart = std::chrono::high_resolution_clock::now();
-
   struct Result {
     double similarity;
-    size_t index;
+    string userId;
   };
 
+  std::vector<std::pair<string, UserSession>> sessionVec(
+      store.sessions_.begin(), store.sessions_.end());
+
   Result best = tbb::parallel_reduce(
-      tbb::blocked_range<size_t>(0, numVectors),
-      Result{-1.0, 0}, // initial value
+      tbb::blocked_range<size_t>(0, sessionVec.size()), Result{-MAXFLOAT, ""},
       [&](const tbb::blocked_range<size_t> &r, Result localBest) -> Result {
-        for (size_t i = r.begin(); i < r.end(); i++) {
+        for (size_t i = r.begin(); i < r.end(); ++i) {
+          const auto &[userId, sess] = sessionVec[i];
           // Homomorphic elementwise multiplication
           Ciphertext<DCRTPoly> encProduct =
-              cc->EvalMult(encQuery, encDBVectors[i]);
+              cc->EvalMult(encQuery, sess.encryptedVector);
 
           // Sum all slots (this gives the dot product)
-          for (int j = 1; j < int(batchSize); j *= 2) {
+          for (int j = 1; j < int(VECTOR_DIM); j *= 2) {
             encProduct = cc->EvalAdd(encProduct, cc->EvalRotate(encProduct, j));
           }
 
-          // Decrypt the dot product
-          vector<double> resultVec =
-              OpenFHEImpl::decryptToVector(cc, sk, encProduct);
-          double similarity = resultVec[0]; // first slot has the sum
-
-          if (similarity > localBest.similarity) {
-            localBest.similarity = similarity;
-            localBest.index = i;
+          if (sess.encryptedOne == encProduct) {
+            localBest.similarity = 1.0;
+            localBest.userId = userId;
+            break;
           }
         }
         return localBest;
@@ -120,13 +104,12 @@ int main(int argc, char *argv[]) {
       [](const Result &a, const Result &b) -> Result {
         return (a.similarity > b.similarity) ? a : b;
       });
-
   auto searchEnd = std::chrono::high_resolution_clock::now();
   std::chrono::duration<double, std::milli> searchDuration =
       searchEnd - searchStart;
 
   std::cout << "Maximum cosine similarity is " << best.similarity
-            << " at index " << best.index << "\n";
+            << " at index " << best.userId << "\n";
   std::cout << "Search time: " << searchDuration.count() << " ms" << "\n";
 
   return 0;

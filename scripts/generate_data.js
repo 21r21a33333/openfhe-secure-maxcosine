@@ -54,11 +54,6 @@ const generateRandomVector = () =>
         .map(() => Math.floor(Math.random() * 199) - 99)
         .join(' ');
 
-const generateMatchingVector = () =>
-    Array(DIM)
-        .fill(0)
-        .map(() => Math.floor(Math.random() * 2) + 1)
-        .join(' ');
 
 // Dataset generation (streaming version for large files)
 const generateDataset = async ({ filepath, size, similarityIndex }) => {
@@ -74,7 +69,7 @@ const generateDataset = async ({ filepath, size, similarityIndex }) => {
 
     // Write each database vector, one per line
     for (let i = 0; i < size; i++) {
-        const vec = (i === similarityIndex) ? generateMatchingVector() : generateRandomVector();
+        const vec = (i === similarityIndex) ? generateQueryVector() : generateRandomVector();
         stream.write(vec + '\n');
     }
 
@@ -123,7 +118,6 @@ if (require.main === module) {
 module.exports = {
     generateQueryVector,
     generateRandomVector,
-    generateMatchingVector,
     generateDataset,
     validateArgs
 };

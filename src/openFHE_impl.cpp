@@ -1,7 +1,8 @@
 #include "../include/openFHE_lib.h"
 
 // Outputs relevant metadata of a given CKKS-RNS crypto context
-void OpenFHEImpl::printSchemeDetails(CCParams<CryptoContextCKKSRNS> parameters, CryptoContext<DCRTPoly> cc) {
+void OpenFHEImpl::printSchemeDetails(CCParams<CryptoContextCKKSRNS> parameters,
+                                     CryptoContext<DCRTPoly> cc) {
   cout << "----- CryptoContext Details -----" << endl;
   cout << "\tBatch Size: " << cc->GetEncodingParams()->GetBatchSize() << endl;
   cout << endl;
@@ -12,7 +13,8 @@ void OpenFHEImpl::printSchemeDetails(CCParams<CryptoContextCKKSRNS> parameters, 
   cout << "\tScaling Mod Size: " << parameters.GetScalingModSize() << endl;
   cout << "\tRing Dimension: " << cc->GetRingDimension() << endl;
   cout << "\tNoise Estimate: " << parameters.GetNoiseEstimate() << endl;
-  cout << "\tMultiplicative Depth: " << parameters.GetMultiplicativeDepth() << endl; 
+  cout << "\tMultiplicative Depth: " << parameters.GetMultiplicativeDepth()
+       << endl;
   cout << "\tNoise Level: " << parameters.GetNoiseEstimate() << endl;
   cout << endl;
 }
@@ -21,28 +23,35 @@ void OpenFHEImpl::printSchemeDetails(CCParams<CryptoContextCKKSRNS> parameters, 
 void OpenFHEImpl::printCipherDetails(Ciphertext<DCRTPoly> ctxt) {
   cout << "----- Ciphertext Details -----" << endl;
   cout << "\tBatch Size: " << ctxt->GetSlots() << endl;
-  cout << "\tScaling Degree: " << ctxt->GetNoiseScaleDeg() << "\t(delta = " << ctxt->GetScalingFactor() << ")" << endl;
+  cout << "\tScaling Degree: " << ctxt->GetNoiseScaleDeg()
+       << "\t(delta = " << ctxt->GetScalingFactor() << ")" << endl;
   cout << "\tLevel: " << ctxt->GetLevel() << endl;
   cout << "\tEncoding Parameters: " << ctxt->GetEncodingParameters() << endl;
   cout << endl;
 }
 
 // decrypts a given ciphertext and returns a vector of its contents
-Ciphertext<DCRTPoly> OpenFHEImpl::encryptFromVector(CryptoContext<DCRTPoly> cc, PublicKey<DCRTPoly> pk, vector<double> vec) {
+Ciphertext<DCRTPoly> OpenFHEImpl::encryptFromVector(CryptoContext<DCRTPoly> cc,
+                                                    PublicKey<DCRTPoly> pk,
+                                                    vector<double> vec) {
   Plaintext ptxt = cc->MakeCKKSPackedPlaintext(vec);
   return cc->Encrypt(pk, ptxt);
 }
 
-
 // decrypts a given ciphertext and returns a vector of its contents
-vector<double> OpenFHEImpl::decryptToVector(CryptoContext<DCRTPoly> cc, PrivateKey<DCRTPoly> sk, Ciphertext<DCRTPoly> ctxt) {
+vector<double> OpenFHEImpl::decryptToVector(CryptoContext<DCRTPoly> cc,
+                                            PrivateKey<DCRTPoly> sk,
+                                            Ciphertext<DCRTPoly> ctxt) {
   Plaintext ptxt;
   cc->Decrypt(sk, ctxt, &ptxt);
   return ptxt->GetRealPackedValue();
 }
 
-// performs any rotation on a ciphertext using 2log_2(batchsize) rotation keys and (1/2)log_2(batchsize) rotations
-Ciphertext<DCRTPoly> OpenFHEImpl::binaryRotate(CryptoContext<DCRTPoly> cc, Ciphertext<DCRTPoly> ctxt, int factor) {
+// performs any rotation on a ciphertext using 2log_2(batchsize) rotation keys
+// and (1/2)log_2(batchsize) rotations
+Ciphertext<DCRTPoly> OpenFHEImpl::binaryRotate(CryptoContext<DCRTPoly> cc,
+                                               Ciphertext<DCRTPoly> ctxt,
+                                               int factor) {
   int batchSize = cc->GetEncodingParams()->GetBatchSize();
 
   vector<int> neededRotations;
@@ -50,19 +59,19 @@ Ciphertext<DCRTPoly> OpenFHEImpl::binaryRotate(CryptoContext<DCRTPoly> cc, Ciphe
   int binaryCounter;
   int currentRotation;
 
-  while(factor != 0) {
+  while (factor != 0) {
     factorSign = factor / abs(factor);
 
     binaryCounter = pow(2, round(log2(abs(factor))));
     currentRotation = (binaryCounter * factorSign) % batchSize;
-    if(currentRotation != 0) {
+    if (currentRotation != 0) {
       neededRotations.push_back(binaryCounter * factorSign);
     }
 
     factor -= binaryCounter * factorSign;
   }
 
-  for(long unsigned int i = 0; i < neededRotations.size(); i++) {
+  for (long unsigned int i = 0; i < neededRotations.size(); i++) {
     ctxt = cc->EvalRotate(ctxt, neededRotations[i]);
   }
 
@@ -71,13 +80,13 @@ Ciphertext<DCRTPoly> OpenFHEImpl::binaryRotate(CryptoContext<DCRTPoly> cc, Ciphe
 
 void OpenFHEImpl::plaintextNormalize(vector<double> &vec, const size_t dim) {
   double magnitude = 0.0;
-  for(size_t i = 0 ; i < dim; i++) {
+  for (size_t i = 0; i < dim; i++) {
     magnitude += (vec[i] * vec[i]);
   }
   magnitude = sqrt(magnitude);
 
   if (magnitude != 0) {
-    for(size_t i = 0 ; i < dim; i++) {
+    for (size_t i = 0; i < dim; i++) {
       vec[i] /= magnitude;
     }
   }
