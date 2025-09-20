@@ -81,7 +81,7 @@ int main(int argc, char *argv[]) {
       store.sessions_.begin(), store.sessions_.end());
 
   Result best = tbb::parallel_reduce(
-      tbb::blocked_range<size_t>(0, sessionVec.size()), Result{-MAXFLOAT, ""},
+      tbb::blocked_range<size_t>(0, sessionVec.size()), Result{-1.0, ""},
       [&](const tbb::blocked_range<size_t> &r, Result localBest) -> Result {
         for (size_t i = r.begin(); i < r.end(); ++i) {
           const auto &[userId, sess] = sessionVec[i];
@@ -107,14 +107,21 @@ int main(int argc, char *argv[]) {
 
           cc->MultipartyDecryptFusion(partialCiphertextVec,
                                       &plaintextMultipartyNew);
-          if (userId == "user_2") {
-            cout << "Decypted answer: " << plaintextMultipartyNew << endl;
-            cout << "_________" << endl;
-          }
-          if (sess.encryptedOne == encProduct) {
-            localBest.similarity = 1.0;
+
+          // Extract the similarity value from the first slot
+          auto decryptedValues = plaintextMultipartyNew->GetRealPackedValue();
+          double similarity = decryptedValues[0];
+
+          // if (userId == "user_2") {
+          //   cout << "Decrypted answer: " << plaintextMultipartyNew << endl;
+          //   cout << "Similarity value: " << similarity << endl;
+          //   cout << "_________" << endl;
+          // }
+
+          // Update best result if this similarity is higher
+          if (similarity > localBest.similarity) {
+            localBest.similarity = similarity;
             localBest.userId = userId;
-            break;
           }
         }
         return localBest;
