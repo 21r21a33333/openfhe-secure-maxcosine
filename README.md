@@ -83,16 +83,12 @@ The implementation uses `tbb::parallel_reduce` to distribute the similarity comp
 
 The following table compares the performance of the **oneTBB parallel implementation** against the **traditional linear search** across different dataset sizes:
 
-| Dataset Size | Algorithm           | Similarity Score | Found Index | Search Time (ms) | Speedup   |
-| ------------ | ------------------- | ---------------- | ----------- | ---------------- | --------- |
-| 1,000        | **oneTBB Parallel** | 0.950509         | 89          | **0.474**        | **2.7x**  |
-|              | Linear Search       | 0.949835         | 653         | 1.273            | -         |
-| 10,000       | **oneTBB Parallel** | 0.948683         | 5,337       | **8.062**        | **3.9x**  |
-|              | Linear Search       | 0.949058         | 234         | 2.045            | -         |
-| 100,000      | **oneTBB Parallel** | 0.948078         | 93,018      | **75.452**       | **10.3x** |
-|              | Linear Search       | 0.949968         | 36,446      | 7.312            | -         |
-| 1,000,000    | **oneTBB Parallel** | 0.949703         | 790,133     | **8,560.5**      | **5.6x**  |
-|              | Linear Search       | 0.947276         | 348,163     | 1,516.28         | -         |
+| Dataset Size | Linear Search Time (ms) | oneTBB Search Time (ms) |
+| ------------ | ----------------------- | ----------------------- |
+| 1,000        | 0.473916                | 1.32071                 |
+| 10,000       | 8.06217                 | 1.93463                 |
+| 100,000      | 75.452                  | 7.49996                 |
+| 1,000,000    | 8560.5                  | 588.362                 |
 
 ### Performance Analysis
 

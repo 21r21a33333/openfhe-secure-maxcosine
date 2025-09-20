@@ -3,11 +3,11 @@
 === Test for 1000 elements ===
 Generate Data Output:
 Generating dataset with 1000 vectors...
-Similarity vector at index: 653
+Similarity vector at index: 471
 
 Dataset successfully written to: test_data_1000.dat
 Total vectors: 1000
-Similarity vector: is at index 653
+Similarity vector: is at index 471
 Random vectors: 999
 
 Build successful
@@ -16,19 +16,18 @@ Setting up parameters...
 Generating keys...
 Reading in vectors...
 Beginning implementation...
-Maximum cosine similarity is 0.949835 at index 653
-Time complexity: O(N), where N = 1000
-Search time: 1.27321 ms
+Maximum cosine similarity is 0.950646 at index 471
+Search time: 1.32071 ms
 
 
 === Test for 10000 elements ===
 Generate Data Output:
 Generating dataset with 10000 vectors...
-Similarity vector at index: 234
+Similarity vector at index: 4804
 
 Dataset successfully written to: test_data_10000.dat
 Total vectors: 10000
-Similarity vector: is at index 234
+Similarity vector: is at index 4804
 Random vectors: 9999
 
 Build successful
@@ -37,19 +36,18 @@ Setting up parameters...
 Generating keys...
 Reading in vectors...
 Beginning implementation...
-Maximum cosine similarity is 0.949058 at index 234
-Time complexity: O(N), where N = 10000
-Search time: 2.04537 ms
+Maximum cosine similarity is 0.946949 at index 4804
+Search time: 1.93463 ms
 
 
 === Test for 100000 elements ===
 Generate Data Output:
 Generating dataset with 100000 vectors...
-Similarity vector at index: 36446
+Similarity vector at index: 95453
 
 Dataset successfully written to: test_data_100000.dat
 Total vectors: 100000
-Similarity vector: is at index 36446
+Similarity vector: is at index 95453
 Random vectors: 99999
 
 Build successful
@@ -58,19 +56,18 @@ Setting up parameters...
 Generating keys...
 Reading in vectors...
 Beginning implementation...
-Maximum cosine similarity is 0.949968 at index 36446
-Time complexity: O(N), where N = 100000
-Search time: 7.31246 ms
+Maximum cosine similarity is 0.9475 at index 95453
+Search time: 7.49996 ms
 
 
 === Test for 1000000 elements ===
 Generate Data Output:
 Generating dataset with 1000000 vectors...
-Similarity vector at index: 348163
+Similarity vector at index: 803932
 
 Dataset successfully written to: test_data_1000000.dat
 Total vectors: 1000000
-Similarity vector: is at index 348163
+Similarity vector: is at index 803932
 Random vectors: 999999
 
 Build successful
@@ -79,7 +76,6 @@ Setting up parameters...
 Generating keys...
 Reading in vectors...
 Beginning implementation...
-Maximum cosine similarity is 0.947276 at index 348163
-Time complexity: O(N), where N = 1000000
-Search time: 1516.28 ms
+Maximum cosine similarity is 0.947614 at index 803932
+Search time: 588.362 ms
 

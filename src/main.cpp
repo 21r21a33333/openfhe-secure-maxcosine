@@ -1,5 +1,6 @@
 #include "../include/config.h"
 #include "../include/openFHE_lib.h"
+#include "oneapi/tbb/task_arena.h"
 #include <chrono>
 #include <fstream>
 #include <iostream>
@@ -13,10 +14,6 @@ using namespace std;
 // Entry point of the application that orchestrates the flow
 
 int main(int argc, char *argv[]) {
-
-  // The only parameter you will need to modify is multiplicative depth
-  // Which is located in ../include/config.h
-
   // ----- Don't touch anything in the section below -----
   cout << "Setting up parameters..." << "\n";
   CCParams<CryptoContextCKKSRNS> parameters;
