@@ -2,6 +2,7 @@
 #include "../include/openFHE_lib.h"
 #include "oneapi/tbb/task_arena.h"
 #include <chrono>
+#include <climits>
 #include <fstream>
 #include <iostream>
 #include <numeric>
@@ -93,7 +94,7 @@ int main(int argc, char *argv[]) {
 
   Result best = tbb::parallel_reduce(
       tbb::blocked_range<size_t>(0, numVectors),
-      Result{-1.0, 0}, // initial value
+      Result{-INT_MAX, 0}, // initial value
       [&](const tbb::blocked_range<size_t> &r, Result localBest) -> Result {
         for (size_t i = r.begin(); i < r.end(); i++) {
           // Homomorphic elementwise multiplication
