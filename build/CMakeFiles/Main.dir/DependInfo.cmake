@@ -8,7 +8,8 @@ set(CMAKE_DEPENDS_LANGUAGES
 
 # The set of dependency files which are needed:
 set(CMAKE_DEPENDS_DEPENDENCY_FILES
-  "/Users/diwakarmatsaa/Desktop/merkel/demo-simple-example.cpp" "CMakeFiles/test.dir/demo-simple-example.cpp.o" "gcc" "CMakeFiles/test.dir/demo-simple-example.cpp.o.d"
+  "/Users/diwakarmatsaa/Desktop/merkel/src/main.cpp" "CMakeFiles/Main.dir/src/main.cpp.o" "gcc" "CMakeFiles/Main.dir/src/main.cpp.o.d"
+  "/Users/diwakarmatsaa/Desktop/merkel/src/openFHE_impl.cpp" "CMakeFiles/Main.dir/src/openFHE_impl.cpp.o" "gcc" "CMakeFiles/Main.dir/src/openFHE_impl.cpp.o.d"
   )
 
 # Targets to which this target links which contain Fortran sources.

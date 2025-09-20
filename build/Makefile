@@ -117,41 +117,65 @@ depend:
 .PHONY : depend
 
 #=============================================================================
-# Target rules for targets named test
+# Target rules for targets named Main
 
 # Build rule for target.
-test: cmake_check_build_system
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test
-.PHONY : test
+Main: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 Main
+.PHONY : Main
 
 # fast build rule for target.
-test/fast:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/test.dir/build.make CMakeFiles/test.dir/build
-.PHONY : test/fast
+Main/fast:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Main.dir/build.make CMakeFiles/Main.dir/build
+.PHONY : Main/fast
 
-demo-simple-example.o: demo-simple-example.cpp.o
-.PHONY : demo-simple-example.o
+src/main.o: src/main.cpp.o
+.PHONY : src/main.o
 
 # target to build an object file
-demo-simple-example.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/test.dir/build.make CMakeFiles/test.dir/demo-simple-example.cpp.o
-.PHONY : demo-simple-example.cpp.o
+src/main.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Main.dir/build.make CMakeFiles/Main.dir/src/main.cpp.o
+.PHONY : src/main.cpp.o
 
-demo-simple-example.i: demo-simple-example.cpp.i
-.PHONY : demo-simple-example.i
+src/main.i: src/main.cpp.i
+.PHONY : src/main.i
 
 # target to preprocess a source file
-demo-simple-example.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/test.dir/build.make CMakeFiles/test.dir/demo-simple-example.cpp.i
-.PHONY : demo-simple-example.cpp.i
+src/main.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Main.dir/build.make CMakeFiles/Main.dir/src/main.cpp.i
+.PHONY : src/main.cpp.i
 
-demo-simple-example.s: demo-simple-example.cpp.s
-.PHONY : demo-simple-example.s
+src/main.s: src/main.cpp.s
+.PHONY : src/main.s
 
 # target to generate assembly for a file
-demo-simple-example.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/test.dir/build.make CMakeFiles/test.dir/demo-simple-example.cpp.s
-.PHONY : demo-simple-example.cpp.s
+src/main.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Main.dir/build.make CMakeFiles/Main.dir/src/main.cpp.s
+.PHONY : src/main.cpp.s
+
+src/openFHE_impl.o: src/openFHE_impl.cpp.o
+.PHONY : src/openFHE_impl.o
+
+# target to build an object file
+src/openFHE_impl.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Main.dir/build.make CMakeFiles/Main.dir/src/openFHE_impl.cpp.o
+.PHONY : src/openFHE_impl.cpp.o
+
+src/openFHE_impl.i: src/openFHE_impl.cpp.i
+.PHONY : src/openFHE_impl.i
+
+# target to preprocess a source file
+src/openFHE_impl.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Main.dir/build.make CMakeFiles/Main.dir/src/openFHE_impl.cpp.i
+.PHONY : src/openFHE_impl.cpp.i
+
+src/openFHE_impl.s: src/openFHE_impl.cpp.s
+.PHONY : src/openFHE_impl.s
+
+# target to generate assembly for a file
+src/openFHE_impl.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Main.dir/build.make CMakeFiles/Main.dir/src/openFHE_impl.cpp.s
+.PHONY : src/openFHE_impl.cpp.s
 
 # Help Target
 help:
@@ -161,10 +185,13 @@ help:
 	@echo "... depend"
 	@echo "... edit_cache"
 	@echo "... rebuild_cache"
-	@echo "... test"
-	@echo "... demo-simple-example.o"
-	@echo "... demo-simple-example.i"
-	@echo "... demo-simple-example.s"
+	@echo "... Main"
+	@echo "... src/main.o"
+	@echo "... src/main.i"
+	@echo "... src/main.s"
+	@echo "... src/openFHE_impl.o"
+	@echo "... src/openFHE_impl.i"
+	@echo "... src/openFHE_impl.s"
 .PHONY : help
 
 
