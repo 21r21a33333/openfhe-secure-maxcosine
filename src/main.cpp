@@ -1,5 +1,11 @@
 #include "../include/config.h"
 #include "../include/openFHE_lib.h"
+#include <chrono>
+#include <fstream>
+#include <iostream>
+#include <numeric>
+#include <tbb/blocked_range.h>
+#include <tbb/parallel_reduce.h>
 
 using namespace lbcrypto;
 using namespace std;
@@ -81,26 +87,39 @@ int main(int argc, char *argv[]) {
   // encrypted domain
   cout << "Beginning implementation..." << "\n";
 
-  auto searchStart = chrono::high_resolution_clock::now();
+  auto searchStart = std::chrono::high_resolution_clock::now();
 
-  double maxSimilarity = -1.0;
-  size_t maxIndex = 0;
-  for (size_t i = 0; i < dbVectors.size(); ++i) {
-    double similarity = inner_product(queryVector.begin(), queryVector.end(),
-                                      dbVectors[i].begin(), 0.0);
-    if (similarity > maxSimilarity) {
-      maxSimilarity = similarity;
-      maxIndex = i;
-    }
-  }
+  struct Result {
+    double similarity;
+    size_t index;
+  };
 
-  auto searchEnd = chrono::high_resolution_clock::now();
-  chrono::duration<double, std::milli> searchDuration = searchEnd - searchStart;
+  Result best = tbb::parallel_reduce(
+      tbb::blocked_range<size_t>(0, dbVectors.size()),
+      Result{-1.0, 0}, // initial value
+      [&](const tbb::blocked_range<size_t> &r, Result localBest) -> Result {
+        for (size_t i = r.begin(); i < r.end(); i++) {
+          double similarity =
+              std::inner_product(queryVector.begin(), queryVector.end(),
+                                 dbVectors[i].begin(), 0.0);
+          if (similarity > localBest.similarity) {
+            localBest.similarity = similarity;
+            localBest.index = i;
+          }
+        }
+        return localBest;
+      },
+      [](const Result &a, const Result &b) -> Result {
+        return (a.similarity > b.similarity) ? a : b;
+      });
 
-  cout << "Maximum cosine similarity is " << maxSimilarity << " at index "
-       << maxIndex << "\n";
-  cout << "Time complexity: O(N), where N = " << dbVectors.size() << "\n";
-  cout << "Search time: " << searchDuration.count() << " ms" << "\n";
+  auto searchEnd = std::chrono::high_resolution_clock::now();
+  std::chrono::duration<double, std::milli> searchDuration =
+      searchEnd - searchStart;
+
+  std::cout << "Maximum cosine similarity is " << best.similarity
+            << " at index " << best.index << "\n";
+  std::cout << "Search time: " << searchDuration.count() << " ms" << "\n";
 
   return 0;
 }

@@ -20,6 +20,11 @@ project(demo CXX)
 set(CMAKE_CXX_STANDARD 17)
 option( BUILD_STATIC "Set to ON to include static versions of the library" OFF)
 
+# Find TBB manually
+set(TBB_INCLUDE_DIR "/Users/diwakarmatsaa/oneTBB/include")
+set(TBB_LIB_DIR "/Users/diwakarmatsaa/oneTBB/build/appleclang_17.0_cxx11_64_relwithdebinfo")
+find_library(TBB_LIBRARY NAMES tbb PATHS ${TBB_LIB_DIR} NO_DEFAULT_PATH)
+
 find_package(OpenFHE CONFIG REQUIRED)
 if (OpenFHE_FOUND)
     message(STATUS "FOUND PACKAGE OpenFHE")
@@ -40,6 +45,10 @@ include_directories( ${OpenFHE_INCLUDE}/third-party/include )
 include_directories( ${OpenFHE_INCLUDE}/core )
 include_directories( ${OpenFHE_INCLUDE}/pke )
 include_directories( ${OpenFHE_INCLUDE}/binfhe )
+# Add project include directory
+include_directories( ${CMAKE_SOURCE_DIR}/include )
+# Add TBB include directory
+include_directories( ${TBB_INCLUDE_DIR} )
 ### add directories for other OpenFHE modules as needed for your project
 
 link_directories( ${OpenFHE_LIBDIR} )
@@ -61,3 +70,6 @@ add_executable( Main
     src/main.cpp
     src/openFHE_impl.cpp
 )
+
+# Link TBB to the executable
+target_link_libraries(Main ${TBB_LIBRARY})

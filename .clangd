@@ -19,6 +19,9 @@ CompileFlags:
     - -I/usr/local/include/openfhe/binfhe
     - -I/usr/local/include/openfhe/third-party/include
 
+    # Intel TBB includes
+    - -I/Users/diwakarmatsaa/oneTBB/include
+
     # Compiler flags
     - -Wall
     - -Wextra
