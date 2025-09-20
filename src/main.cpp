@@ -1,18 +1,17 @@
 #include "../include/config.h"
 #include "../include/openFHE_lib.h"
+#include <chrono>
+#include <climits>
+#include <fstream>
+#include <iostream>
+#include <numeric>
 
 using namespace lbcrypto;
 using namespace std;
 
-// Entry point of the application that orchestrates the flow
-
 int main(int argc, char *argv[]) {
-
-  // The only parameter you will need to modify is multiplicative depth
-  // Which is located in ../include/config.h
-
-  // ----- Don't touch anything in the section below -----
   cout << "Setting up parameters..." << "\n";
+
   CCParams<CryptoContextCKKSRNS> parameters;
   parameters.SetSecurityLevel(HEStd_128_classic);
   parameters.SetMultiplicativeDepth(MULT_DEPTH);
@@ -25,13 +24,12 @@ int main(int argc, char *argv[]) {
   cc->Enable(ADVANCEDSHE);
 
   size_t batchSize = cc->GetEncodingParams()->GetBatchSize();
-  // ----- Don't touch anything in the section above -----
 
-  // Begin key generation operations
   cout << "Generating keys..." << "\n";
   auto keyPair = cc->KeyGen();
   auto pk = keyPair.publicKey;
   auto sk = keyPair.secretKey;
+
   cc->EvalMultKeyGen(sk);
   vector<int> binaryRotationFactors;
   for (int i = 1; i < int(batchSize); i *= 2) {
@@ -39,9 +37,8 @@ int main(int argc, char *argv[]) {
     binaryRotationFactors.push_back(-i);
   }
   cc->EvalRotateKeyGen(sk, binaryRotationFactors);
-  // End key generation operations
 
-  // Begin reading in vectors from input file
+  // ---------------------- Read Vectors -----------------------
   cout << "Reading in vectors..." << "\n";
   ifstream fileStream;
   if (argc > 1) {
@@ -73,34 +70,52 @@ int main(int argc, char *argv[]) {
     OpenFHEImpl::plaintextNormalize(dbVectors[i], VECTOR_DIM);
   }
   fileStream.close();
-  // End reading in vectors from input file
 
-  // Diagonal MVM implementation goes below
-  // queryVector is 1-D of length 512, already normalized
-  // Compute the matrix-vector product of dbVectors times queryVector in the
-  // encrypted domain
-  cout << "Beginning implementation..." << "\n";
+  // ------------------ Encrypt Vectors -----------------------
+  cout << "Encrypting vectors..." << "\n";
+  auto encQuery = OpenFHEImpl::encryptFromVector(cc, pk, queryVector);
 
-  auto searchStart = chrono::high_resolution_clock::now();
+  vector<Ciphertext<DCRTPoly>> encDBVectors(numVectors);
+  for (size_t i = 0; i < numVectors; i++) {
+    encDBVectors[i] = OpenFHEImpl::encryptFromVector(cc, pk, dbVectors[i]);
+  }
 
-  double maxSimilarity = -1.0;
-  size_t maxIndex = 0;
-  for (size_t i = 0; i < dbVectors.size(); ++i) {
-    double similarity = inner_product(queryVector.begin(), queryVector.end(),
-                                      dbVectors[i].begin(), 0.0);
-    if (similarity > maxSimilarity) {
-      maxSimilarity = similarity;
-      maxIndex = i;
+  // ------------------ Homomorphic Dot Product ----------------
+  cout << "Computing encrypted dot products..." << "\n";
+  auto searchStart = std::chrono::high_resolution_clock::now();
+
+  struct Result {
+    double similarity;
+    size_t index;
+  };
+
+  Result best = {-INT_MAX, 0};
+  for (size_t i = 0; i < numVectors; ++i) {
+    // Homomorphic elementwise multiplication
+    Ciphertext<DCRTPoly> encProduct = cc->EvalMult(encQuery, encDBVectors[i]);
+
+    // Sum all slots (this gives the dot product)
+    for (int j = 1; j < int(batchSize); j *= 2) {
+      encProduct = cc->EvalAdd(encProduct, cc->EvalRotate(encProduct, j));
+    }
+
+    // Decrypt the dot product
+    vector<double> resultVec = OpenFHEImpl::decryptToVector(cc, sk, encProduct);
+    double similarity = resultVec[0]; // first slot has the sum
+
+    if (similarity > best.similarity) {
+      best.similarity = similarity;
+      best.index = i;
     }
   }
 
-  auto searchEnd = chrono::high_resolution_clock::now();
-  chrono::duration<double, std::milli> searchDuration = searchEnd - searchStart;
+  auto searchEnd = std::chrono::high_resolution_clock::now();
+  std::chrono::duration<double, std::milli> searchDuration =
+      searchEnd - searchStart;
 
-  cout << "Maximum cosine similarity is " << maxSimilarity << " at index "
-       << maxIndex << "\n";
-  cout << "Time complexity: O(N), where N = " << dbVectors.size() << "\n";
-  cout << "Search time: " << searchDuration.count() << " ms" << "\n";
+  std::cout << "Maximum cosine similarity is " << best.similarity
+            << " at index " << best.index << "\n";
+  std::cout << "Search time: " << searchDuration.count() << " ms" << "\n";
 
   return 0;
 }

@@ -45,26 +45,6 @@ for (size_t i = 0; i < dbVectors.size(); ++i) {
 - **Space Complexity**: O(N × D) for storing database vectors
 - **Search Pattern**: Brute force linear scan through all vectors
 
-## Performance Metrics
-
-The following table shows the performance results of the linear search algorithm across different dataset sizes:
-
-| Dataset Size | Similarity Score | Found Index | Search Time (ms) | Time Complexity |
-| ------------ | ---------------- | ----------- | ---------------- | --------------- |
-| 1,000        | 0.950509         | 89          | 0.474            | O(1000)         |
-| 10,000       | 0.948683         | 5,337       | 8.062            | O(10000)        |
-| 100,000      | 0.948078         | 93,018      | 75.452           | O(100000)       |
-| 1,000,000    | 0.949703         | 790,133     | 8,560.5          | O(1000000)      |
-
-### Key Observations
-
-- **Linear scaling**: Search time increases proportionally with dataset size
-- **Consistent accuracy**: Similarity scores remain stable (~0.95) across all test sizes
-- **Performance characteristics**:
-  - Small datasets (< 10K): Sub-millisecond to low millisecond range
-  - Medium datasets (10K-100K): Tens of milliseconds
-  - Large datasets (1M+): Several seconds
-
 ## Homomorphic Encryption Context
 
 ### CKKS-RNS Parameters
