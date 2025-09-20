@@ -23,6 +23,8 @@ struct UserSession {
   Ciphertext<DCRTPoly> encryptedVector;
   // encrypted 1
   Ciphertext<DCRTPoly> encryptedOne;
+
+  PrivateKey<DCRTPoly> clientSecret;
 };
 
 //
@@ -58,6 +60,7 @@ public:
 
   std::pair<bool, PrivateKey<DCRTPoly>>
   CreateUserSession(const std::string &userId) {
+
     if (sessions_.count(userId)) {
       std::cerr << "[store] userId already exists: " << userId << "\n";
       return {false, PrivateKey<DCRTPoly>()};
@@ -75,9 +78,6 @@ public:
 
     KeyPair<DCRTPoly> kpMultiparty;
     kp1 = cc_->KeyGen();
-    auto sk = kp1.secretKey;
-    cc_->EvalMultKeyGen(sk);
-    cc_->EvalRotateKeyGen(sk, binaryRotationFactors);
 
     // Generate evalmult key part for A
     auto evalMultKey = cc_->KeySwitchGen(kp1.secretKey, kp1.secretKey);
@@ -89,10 +89,6 @@ public:
 
     // Round 2 (party B)
     kp2 = cc_->MultipartyKeyGen(kp1.publicKey);
-    // add indices to rotation evaluation keys
-    sk = kp2.secretKey;
-    cc_->EvalMultKeyGen(sk);
-    cc_->EvalRotateKeyGen(sk, binaryRotationFactors);
 
     auto evalMultKey2 =
         cc_->MultiKeySwitchGen(kp2.secretKey, kp2.secretKey, evalMultKey);
@@ -112,22 +108,22 @@ public:
 
     auto evalMultAAB = cc_->MultiMultEvalKey(kp1.secretKey, evalMultAB,
                                              kp2.publicKey->GetKeyTag());
+
     auto evalMultFinal = cc_->MultiAddEvalMultKeys(evalMultAAB, evalMultBAB,
                                                    evalMultAB->GetKeyTag());
 
     cc_->InsertEvalMultKey({evalMultFinal});
 
-    // Save session info in-memory: joint public key and server secret
     UserSession s;
     s.jointPublic = kp2.publicKey;
     s.serverSecret = kp2.secretKey;
+    s.clientSecret = kp1.secretKey;
 
     // create a plain text with VECTOR_DIM {}
     Plaintext p =
-        cc_->MakeCKKSPackedPlaintext(std::vector<double>(VECTOR_DIM, 1.0));
+        cc_->MakeCKKSPackedPlaintext(std::vector<double>(VECTOR_DIM, 1));
     s.encryptedOne = cc_->Encrypt(kp2.publicKey, p);
     sessions_[userId] = std::move(s);
-
     // Return user secret to the caller (simulate handing to user).
     return {true, kp1.secretKey};
   }
@@ -139,14 +135,11 @@ public:
                                const std::vector<double> &v) {
     auto it = sessions_.find(userId);
     if (it == sessions_.end()) {
-      std::cerr << "[store] unknown userId: " << userId << "\n";
       return false;
     }
     UserSession &sess = it->second;
 
     if (v.size() != VECTOR_DIM) {
-      std::cerr << "[store] vector size mismatch; expected " << VECTOR_DIM
-                << "\n";
       return false;
     }
 
@@ -156,7 +149,6 @@ public:
     Plaintext p = cc_->MakeCKKSPackedPlaintext(tmp);
     Ciphertext<DCRTPoly> ct = cc_->Encrypt(sess.jointPublic, p);
     sess.encryptedVector = ct;
-
     return true;
   }
 

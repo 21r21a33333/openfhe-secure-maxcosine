@@ -60,9 +60,10 @@ int main(int argc, char *argv[]) {
   vector<PrivateKey<DCRTPoly>> userSecrets(numVectors);
   for (size_t i = 0; i < numVectors; i++) {
     string userId = "user_" + to_string(i);
+    cout << "Creating session for " << userId << "..." << endl;
     auto [ok, userSk] = store.CreateUserSession(userId);
     if (!ok) {
-      cerr << "Failed to create session for " << userId << "\n";
+      cerr << "[ERROR] Failed to create session for " << userId << "\n";
       return 1;
     }
     userSecrets[i] = userSk;
@@ -93,6 +94,23 @@ int main(int argc, char *argv[]) {
             encProduct = cc->EvalAdd(encProduct, cc->EvalRotate(encProduct, j));
           }
 
+          auto ciphertextPartial1 =
+              cc->MultipartyDecryptLead({encProduct}, sess.clientSecret);
+
+          auto ciphertextPartial2 =
+              cc->MultipartyDecryptMain({encProduct}, sess.serverSecret);
+          Plaintext plaintextMultipartyNew;
+
+          std::vector<Ciphertext<DCRTPoly>> partialCiphertextVec;
+          partialCiphertextVec.push_back(ciphertextPartial1[0]);
+          partialCiphertextVec.push_back(ciphertextPartial2[0]);
+
+          cc->MultipartyDecryptFusion(partialCiphertextVec,
+                                      &plaintextMultipartyNew);
+          if (userId == "user_2") {
+            cout << "Decypted answer: " << plaintextMultipartyNew << endl;
+            cout << "_________" << endl;
+          }
           if (sess.encryptedOne == encProduct) {
             localBest.similarity = 1.0;
             localBest.userId = userId;
