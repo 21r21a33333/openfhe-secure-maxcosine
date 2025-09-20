@@ -6,3 +6,5 @@ cd build
 cmake ..
 make 
 ./Main ../test_data.dat
+
+node scripts/metrics_test.js

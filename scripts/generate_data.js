@@ -6,6 +6,17 @@ const path = require('path');
 // Constants
 const DIM = 512;
 
+/**
+ * WHY IS THIS FAILING FOR LARGE SIZES?
+ * 
+ * The error "Invalid string length" occurs because the code tries to create a single massive string
+ * by joining all vectors (each of length 512) into one string before writing to disk.
+ * For very large sizes (e.g., 1,000,000 vectors), this string can exceed V8's maximum string length
+ * (which is around 512MB to 1GB, depending on the Node.js version and platform).
+ * 
+ * Solution: Write vectors to the file incrementally (streaming), not all at once.
+ */
+
 // Utility functions
 const validateArgs = (args) => {
     if (args.length < 5) {
@@ -49,20 +60,29 @@ const generateMatchingVector = () =>
         .map(() => Math.floor(Math.random() * 2) + 1)
         .join(' ');
 
-// Dataset generation
+// Dataset generation (streaming version for large files)
 const generateDataset = async ({ filepath, size, similarityIndex }) => {
-    const vectors = [];
+    // Use a write stream to avoid building a huge string in memory
+    const fsSync = require('fs');
+    const stream = fsSync.createWriteStream(filepath, { encoding: 'utf8' });
 
-    // Add query vector
-    vectors.push(generateQueryVector());
+    // Write the size as the first line
+    stream.write(`${size}\n`);
 
-    // Generate database vectors
+    // Write the query vector
+    stream.write(generateQueryVector() + '\n');
+
+    // Write each database vector, one per line
     for (let i = 0; i < size; i++) {
-        vectors.push(i === similarityIndex ? generateMatchingVector() : generateRandomVector());
+        const vec = (i === similarityIndex) ? generateMatchingVector() : generateRandomVector();
+        stream.write(vec + '\n');
     }
 
-    // Write to file
-    await fs.writeFile(filepath, `${size}\n${vectors.join('\n')}\n`);
+    // Return a promise that resolves when the stream is finished
+    await new Promise((resolve, reject) => {
+        stream.end(resolve);
+        stream.on('error', reject);
+    });
 
     return { totalVectors: size, similarityIndex, randomVectors: size - 1 };
 };
