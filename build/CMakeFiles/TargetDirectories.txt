@@ -1,0 +1,3 @@
+/Users/diwakarmatsaa/Desktop/merkel/build/CMakeFiles/test.dir
+/Users/diwakarmatsaa/Desktop/merkel/build/CMakeFiles/edit_cache.dir
+/Users/diwakarmatsaa/Desktop/merkel/build/CMakeFiles/rebuild_cache.dir
