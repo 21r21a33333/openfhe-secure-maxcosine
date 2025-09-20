@@ -1,0 +1,8 @@
+node ./scripts/generate_data.js test_data.dat 1000 800
+
+
+mkdir build 
+cd build
+cmake ..
+make 
+./Main ../test_data.dat

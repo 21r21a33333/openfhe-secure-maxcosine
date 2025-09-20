@@ -1,1 +1,0 @@
-# openfhe-secure-maxcosine

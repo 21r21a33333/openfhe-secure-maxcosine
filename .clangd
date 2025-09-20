@@ -1,0 +1,145 @@
+# Clangd configuration for OpenFHE project
+# This file configures the clangd language server for better C++ development experience
+
+# Compilation database
+CompileFlags:
+  Add:
+    # C++ standard
+    - -std=c++17
+
+    # Include directories (based on CMakeLists.txt)
+    - -I./include
+    - -I./src
+
+    # OpenFHE specific includes (these will be populated by CMake)
+    # Note: You may need to adjust these paths based on your OpenFHE installation
+    - -I/usr/local/include/openfhe
+    - -I/usr/local/include/openfhe/core
+    - -I/usr/local/include/openfhe/pke
+    - -I/usr/local/include/openfhe/binfhe
+    - -I/usr/local/include/openfhe/third-party/include
+
+    # Compiler flags
+    - -Wall
+    - -Wextra
+    - -Wpedantic
+
+    # OpenMP support (if available)
+    # Debug information
+    - -g
+
+    # Optimization level (adjust as needed)
+    - -O2
+
+# Index configuration
+Index:
+  # Background indexing
+  Background: Build
+
+  # Standard library indexing
+  StandardLibrary: Yes
+
+# Inlay hints
+InlayHints:
+  Enabled: Yes
+  ParameterNames: Yes
+  DeducedTypes: Yes
+
+# Diagnostics
+Diagnostics:
+  # Suppress some common warnings that might be noisy
+  Suppress:
+    - unused-parameter
+    - unused-variable
+
+  # Clang-tidy checks
+  ClangTidy:
+    Add:
+      - readability-*
+      - performance-*
+      - modernize-*
+      - bugprone-*
+    Remove:
+      - readability-magic-numbers
+      - modernize-use-trailing-return-type
+      - readability-identifier-length
+      - hicpp-identifier-length
+
+# Completion
+Completion:
+  # All scopes completion
+  AllScopes: Yes
+
+  # Include completions
+  Include: Yes
+
+# Hover information
+Hover:
+  ShowAKA: Yes
+
+# Semantic highlighting
+SemanticTokens:
+  DisabledKinds: []
+  DisabledModifiers: []
+
+# Code actions
+CodeActions:
+  # Enable refactoring actions
+  Refactor: Yes
+
+  # Enable quick fixes
+  QuickFix: Yes
+
+# Formatting
+Format:
+  # Style configuration
+  Style: file
+
+  # Fallback style (Google style with some modifications)
+  FallbackStyle: |
+    BasedOnStyle: Google
+    IndentWidth: 2
+    TabWidth: 2
+    UseTab: Never
+    ColumnLimit: 100
+    BreakBeforeBraces: Attach
+    AllowShortIfStatementsOnASingleLine: true
+    AllowShortLoopsOnASingleLine: true
+    AllowShortFunctionsOnASingleLine: All
+    BinPackArguments: false
+    BinPackParameters: false
+    ConstructorInitializerAllOnOneLineOrOnePerLine: true
+    ConstructorInitializerIndentWidth: 2
+    ContinuationIndentWidth: 2
+    Cpp11BracedListStyle: true
+    DerivePointerAlignment: false
+    PointerAlignment: Left
+    ReferenceAlignment: Left
+    SpaceAfterCStyleCast: true
+    SpaceAfterTemplateKeyword: true
+    SpaceBeforeAssignmentOperators: true
+    SpaceBeforeParens: ControlStatements
+    SpaceInEmptyParentheses: false
+    SpacesBeforeTrailingComments: 2
+    SpacesInAngles: false
+    SpacesInCStyleCastParentheses: false
+    SpacesInContainerLiterals: true
+    SpacesInParentheses: false
+    SpacesInSquareBrackets: false
+
+# Function argument hints
+FunctionArg:
+  ShowAKA: Yes
+
+# Header insertion
+HeaderInsertion:
+  # Add includes automatically
+  Add: Yes
+
+  # Include style
+  Style: IncludeBlocks
+
+# Workspace symbols
+WorkspaceSymbols:
+  # Search in all files
+  All: Yes
