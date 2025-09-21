@@ -73,7 +73,7 @@ Ciphertext<DCRTPoly> ApproximateAbs(const CryptoContext<DCRTPoly> &cc,
   // Ensure input has sufficient level for computation
   auto input = ensureMinimumLevel(cc, x, 1);
 
-  // Use a simpler polynomial approximation for |x| on [-1, 1]
+  // Use a simpler a for |x| on [-1, 1]
   // P(x) = a0 + a1*x^2 (reduced from 3 terms to 2 terms)
 
   cout << "[DEBUG] Computing x^2...\n";
