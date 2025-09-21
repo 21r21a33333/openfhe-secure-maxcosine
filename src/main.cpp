@@ -16,6 +16,116 @@ using namespace std;
 // Constants for better readability
 constexpr int EXIT_ERROR = 1;
 
+// Helper function to check if bootstrapping is needed and perform it
+Ciphertext<DCRTPoly> ensureValidLevel(const CryptoContext<DCRTPoly> &cc,
+                                      const Ciphertext<DCRTPoly> &ciphertext) {
+  cout << "[DEBUG] Checking ciphertext level: " << ciphertext->GetLevel()
+       << endl;
+  // If ciphertext level is too low (less than 2), bootstrap it
+  if (ciphertext->GetLevel() < 2) {
+    cout << "[DEBUG] Bootstrapping ciphertext..." << endl;
+    return cc->EvalBootstrap(ciphertext);
+  }
+  cout << "[DEBUG] Ciphertext level sufficient, no bootstrapping needed."
+       << endl;
+  return ciphertext;
+}
+
+// Polynomial approximation for absolute value (optimized for depth)
+Ciphertext<DCRTPoly> ApproximateAbs(const CryptoContext<DCRTPoly> &cc,
+                                    const Ciphertext<DCRTPoly> &x) {
+  cout << "[DEBUG] Starting ApproximateAbs..." << endl;
+  // Use a simpler polynomial approximation for |x| on [-1, 1]
+  // P(x) = a0 + a1*x^2 (reduced from 3 terms to 2 terms)
+
+  cout << "[DEBUG] Computing x^2..." << endl;
+  auto x2 = cc->EvalMult(x, x);
+
+  // Coefficients for simplified approximation of |x|
+  std::vector<double> coeffs(VECTOR_DIM);
+
+  // First term: 0.6366 * x^2
+  cout << "[DEBUG] Computing first term: 0.6366 * x^2..." << endl;
+  std::fill(coeffs.begin(), coeffs.end(), 0.6366);
+  auto term0 = cc->EvalMult(x2, cc->MakeCKKSPackedPlaintext(coeffs));
+
+  // Second term: -0.2122 * x^4 (computed as x^2 * x^2)
+  cout << "[DEBUG] Computing second term: -0.2122 * x^4..." << endl;
+  std::fill(coeffs.begin(), coeffs.end(), -0.2122);
+  auto x4 = cc->EvalMult(x2, x2);
+  auto term1 = cc->EvalMult(x4, cc->MakeCKKSPackedPlaintext(coeffs));
+
+  cout << "[DEBUG] Adding terms for final result..." << endl;
+  auto result = cc->EvalAdd(term0, term1);
+
+  cout << "[DEBUG] ApproximateAbs complete." << endl;
+  return result;
+}
+
+// Approximate max function using polynomial approximation
+Ciphertext<DCRTPoly> ApproximateMax(const CryptoContext<DCRTPoly> &cc,
+                                    const Ciphertext<DCRTPoly> &a,
+                                    const Ciphertext<DCRTPoly> &b) {
+  cout << "[DEBUG] Starting ApproximateMax..." << endl;
+  // max(a,b) ≈ (a + b + |a - b|) / 2
+  cout << "[DEBUG] Computing sum = a + b..." << endl;
+  auto sum = cc->EvalAdd(a, b);
+  cout << "[DEBUG] Computing diff = a - b..." << endl;
+  auto diff = cc->EvalSub(a, b);
+
+  // Approximate |diff| using polynomial approximation
+  cout << "[DEBUG] Approximating |diff|..." << endl;
+  auto absDiff = ApproximateAbs(cc, diff);
+
+  cout << "[DEBUG] Adding sum and absDiff for numerator..." << endl;
+  auto numerator = cc->EvalAdd(sum, absDiff);
+
+  // Ensure we have enough levels before the final multiplication
+  cout << "[DEBUG] Ensuring valid level before division by 2..." << endl;
+  numerator = ensureValidLevel(cc, numerator);
+
+  // Divide by 2 (multiply by 0.5)
+  std::vector<double> halfVec(VECTOR_DIM, 0.5);
+  auto halfPlaintext = cc->MakeCKKSPackedPlaintext(halfVec);
+
+  cout
+      << "[DEBUG] Multiplying numerator by 0.5 to complete max approximation..."
+      << endl;
+  auto result = cc->EvalMult(numerator, halfPlaintext);
+
+  cout << "[DEBUG] ApproximateMax complete." << endl;
+  return result;
+}
+
+// Compute homomorphic maximum across multiple encrypted similarities
+Ciphertext<DCRTPoly>
+ComputeEncryptedMax(const CryptoContext<DCRTPoly> &cc,
+                    const std::vector<Ciphertext<DCRTPoly>> &similarities) {
+  cout << "[DEBUG] Starting ComputeEncryptedMax..." << endl;
+  if (similarities.empty()) {
+    cerr << "[ERROR] Cannot compute max of empty vector" << endl;
+    throw std::invalid_argument("Cannot compute max of empty vector");
+  }
+
+  if (similarities.size() == 1) {
+    cout << "[DEBUG] Only one similarity value, returning it directly." << endl;
+    return similarities[0];
+  }
+
+  // Use tree reduction to compute maximum
+  auto result = similarities[0];
+  for (size_t i = 1; i < similarities.size(); i++) {
+    cout << "[DEBUG] Computing max for element " << i << "..." << endl;
+    // Ensure result has enough levels before each comparison
+    result = ensureValidLevel(cc, result);
+    result = ApproximateMax(cc, result, similarities[i]);
+    cout << "[DEBUG] Max after element " << i << " computed." << endl;
+  }
+
+  cout << "[DEBUG] ComputeEncryptedMax complete." << endl;
+  return result;
+}
+
 /**
  * Validates command line arguments and opens input file
  */
@@ -86,27 +196,45 @@ vector<Ciphertext<DCRTPoly>> computeEncryptedDotProducts(
     const std::vector<Ciphertext<DCRTPoly>> &sessionVec) {
   vector<Ciphertext<DCRTPoly>> encProducts(sessionVec.size());
 
-  tbb::parallel_for(tbb::blocked_range<size_t>(0, sessionVec.size()),
-                    [&](const tbb::blocked_range<size_t> &range) {
-                      for (size_t i = range.begin(); i < range.end(); ++i) {
-                        const auto &session = sessionVec[i];
+  std::cout << "[DEBUG] Starting computeEncryptedDotProducts for "
+            << sessionVec.size() << " database vectors.\n";
 
-                        // Multiply query with encrypted database vector
-                        auto product = cc->EvalMult(encQuery, session);
+  tbb::parallel_for(
+      tbb::blocked_range<size_t>(0, sessionVec.size()),
+      [&](const tbb::blocked_range<size_t> &range) {
+        for (size_t i = range.begin(); i < range.end(); ++i) {
+          const auto &session = sessionVec[i];
 
-                        // Sum all elements using rotation (log(n) rotations for
-                        // n elements)
-                        for (int rotationStep = 1;
-                             rotationStep < static_cast<int>(VECTOR_DIM);
-                             rotationStep *= 2) {
-                          auto rotated = cc->EvalRotate(product, rotationStep);
-                          product = cc->EvalAdd(product, rotated);
-                        }
+          std::cout << "[DEBUG] [Thread "
+                    << tbb::this_task_arena::current_thread_index()
+                    << "] Processing vector " << i << "...\n";
 
-                        encProducts[i] = product;
-                      }
-                    });
+          // Multiply query with encrypted database vector
+          std::cout << "[DEBUG] [Thread "
+                    << tbb::this_task_arena::current_thread_index()
+                    << "] EvalMult for vector " << i << ".\n";
+          auto product = cc->EvalMult(encQuery, session);
 
+          // Sum all elements using rotation (log(n) rotations for n elements)
+          for (int rotationStep = 1;
+               rotationStep < static_cast<int>(VECTOR_DIM); rotationStep *= 2) {
+            std::cout << "[DEBUG] [Thread "
+                      << tbb::this_task_arena::current_thread_index()
+                      << "] EvalRotate by " << rotationStep << " for vector "
+                      << i << ".\n";
+            auto rotated = cc->EvalRotate(product, rotationStep);
+            product = cc->EvalAdd(product, rotated);
+          }
+
+          encProducts[i] = product;
+          std::cout << "[DEBUG] [Thread "
+                    << tbb::this_task_arena::current_thread_index()
+                    << "] Finished encrypted dot product for vector " << i
+                    << ".\n";
+        }
+      });
+
+  std::cout << "[DEBUG] Finished computeEncryptedDotProducts.\n";
   return encProducts;
 }
 
@@ -205,6 +333,7 @@ int main(int argc, char *argv[]) {
     return EXIT_ERROR;
   }
 
+  cout << "Got encrypted vectors for " << targetUserId << "\n";
   // Time the search operation
   auto searchStartTime = chrono::high_resolution_clock::now();
 
@@ -212,21 +341,29 @@ int main(int argc, char *argv[]) {
   auto encryptedProducts = computeEncryptedDotProducts(
       cryptoContext, encryptedQuery, *sessionVectors);
 
+  // Compute Min of the encrypted products
+  auto encryptedMin = ComputeEncryptedMax(cryptoContext, encryptedProducts);
+
   // Get decryption keys for the specified user
   auto targetUserSession = store.sessions_[targetUserId];
   auto userSecret = targetUserSession.clientSecret;
   auto serverSecret = targetUserSession.serverSecret;
 
-  // Find the best matching vector
-  auto [bestSimilarity, bestUserId] =
-      findBestMatch(cryptoContext, encryptedProducts, userSecret, serverSecret);
+  auto userPartial =
+      cryptoContext->MultipartyDecryptLead({encryptedMin}, userSecret);
+  auto serverPartial =
+      cryptoContext->MultipartyDecryptMain({encryptedMin}, serverSecret);
+
+  // Fuse partial decryptions and extract result
+  auto fusedResult =
+      FusePartials(cryptoContext, userPartial[0], serverPartial[0]);
+  auto values = fusedResult->GetRealPackedValue();
+  auto bestSimilarity = values[0];
 
   auto searchEndTime = chrono::high_resolution_clock::now();
   auto searchDuration =
       chrono::duration<double, milli>(searchEndTime - searchStartTime);
-
   // Output results
-  cout << "Maximum cosine similarity: " << bestSimilarity
-       << " (User: " << bestUserId << ")\n";
+  cout << "Maximum cosine similarity: " << bestSimilarity << "\n";
   cout << "Search completed in: " << searchDuration.count() << " ms\n";
 }

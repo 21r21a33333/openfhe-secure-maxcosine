@@ -60,6 +60,7 @@ InitCKKSContext(usint multiplicativeDepth = MULT_DEPTH,
   cryptoContext->Enable(LEVELEDSHE);  // Leveled somewhat homomorphic encryption
   cryptoContext->Enable(ADVANCEDSHE); // Advanced operations (rotation, etc.)
   cryptoContext->Enable(MULTIPARTY);  // Multiparty computation support
+  cryptoContext->Enable(FHE); // Fully homomorphic encryption (bootstrapping)
 
   return cryptoContext;
 }
@@ -274,6 +275,8 @@ public:
   bool
   EncryptAndStoreDBVectors(const std::string &userId,
                            const std::vector<std::vector<double>> &vectors) {
+    std::cout << "[DEBUG][Store] EncryptAndStoreDBVectors called for user: "
+              << userId << " with " << vectors.size() << " vectors.\n";
     auto sessionIt = sessions_.find(userId);
     if (sessionIt == sessions_.end()) {
       std::cerr << "[Store] User session not found: " << userId << "\n";
@@ -282,10 +285,15 @@ public:
 
     try {
       // Reserve space for efficiency
+      std::cout << "[DEBUG][Store] Reserving space for " << vectors.size()
+                << " new encrypted vectors (current size: "
+                << sessionIt->second.encryptedVectors.size() << ").\n";
       sessionIt->second.encryptedVectors.reserve(
           sessionIt->second.encryptedVectors.size() + vectors.size());
 
+      size_t idx = 0;
       for (const auto &vector : vectors) {
+        std::cout << "[DEBUG][Store] Processing vector " << idx << "...\n";
         if (vector.size() != VECTOR_DIM) {
           std::cerr << "[Store] Vector dimension mismatch. Expected: "
                     << VECTOR_DIM << ", Got: " << vector.size() << "\n";
@@ -294,18 +302,27 @@ public:
 
         // Normalize vector for cosine similarity
         std::vector<double> normalizedVector = vector;
+        std::cout << "[DEBUG][Store] Normalizing vector " << idx << ".\n";
         NormalizeVector(normalizedVector);
 
         // Create plaintext and encrypt under joint public key
+        std::cout << "[DEBUG][Store] Creating plaintext for vector " << idx
+                  << ".\n";
         auto plaintext =
             cryptoContext_->MakeCKKSPackedPlaintext(normalizedVector);
+        std::cout << "[DEBUG][Store] Encrypting plaintext for vector " << idx
+                  << ".\n";
         auto ciphertext =
             cryptoContext_->Encrypt(sessionIt->second.jointPublic, plaintext);
 
         // Store encrypted vector in session's vector collection
         sessionIt->second.encryptedVectors.push_back(ciphertext);
+        std::cout << "[DEBUG][Store] Encrypted vector " << idx << " stored.\n";
+        ++idx;
       }
 
+      std::cout << "[DEBUG][Store] Successfully encrypted and stored "
+                << vectors.size() << " vectors for user: " << userId << ".\n";
       return true;
 
     } catch (const std::exception &e) {
