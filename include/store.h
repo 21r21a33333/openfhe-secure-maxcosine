@@ -24,8 +24,8 @@ struct UserSession {
   // Server's secret key share (server retains this)
   PrivateKey<DCRTPoly> serverSecret;
 
-  // Encrypted database vector stored under joint public key
-  Ciphertext<DCRTPoly> encryptedVector;
+  // Multiple encrypted database vectors stored under joint public key
+  std::vector<Ciphertext<DCRTPoly>> encryptedVectors;
 
   // Client's secret key share (for testing/PoC only - normally not stored
   // server-side)
@@ -252,12 +252,64 @@ public:
       auto ciphertext =
           cryptoContext_->Encrypt(sessionIt->second.jointPublic, plaintext);
 
-      // Store encrypted vector in session
-      sessionIt->second.encryptedVector = ciphertext;
+      // Store encrypted vector in session's vector collection
+      sessionIt->second.encryptedVectors.push_back(ciphertext);
       return true;
 
     } catch (const std::exception &e) {
       std::cerr << "[Store] Failed to encrypt vector for " << userId << ": "
+                << e.what() << "\n";
+      return false;
+    }
+  }
+
+  /**
+   * Encrypts and stores multiple database vectors for a specific user
+   * Vectors are normalized before encryption for cosine similarity computation
+   *
+   * @param userId User identifier
+   * @param vectors Vector of database vectors to encrypt and store
+   * @return Success status
+   */
+  bool
+  EncryptAndStoreDBVectors(const std::string &userId,
+                           const std::vector<std::vector<double>> &vectors) {
+    auto sessionIt = sessions_.find(userId);
+    if (sessionIt == sessions_.end()) {
+      std::cerr << "[Store] User session not found: " << userId << "\n";
+      return false;
+    }
+
+    try {
+      // Reserve space for efficiency
+      sessionIt->second.encryptedVectors.reserve(
+          sessionIt->second.encryptedVectors.size() + vectors.size());
+
+      for (const auto &vector : vectors) {
+        if (vector.size() != VECTOR_DIM) {
+          std::cerr << "[Store] Vector dimension mismatch. Expected: "
+                    << VECTOR_DIM << ", Got: " << vector.size() << "\n";
+          return false;
+        }
+
+        // Normalize vector for cosine similarity
+        std::vector<double> normalizedVector = vector;
+        NormalizeVector(normalizedVector);
+
+        // Create plaintext and encrypt under joint public key
+        auto plaintext =
+            cryptoContext_->MakeCKKSPackedPlaintext(normalizedVector);
+        auto ciphertext =
+            cryptoContext_->Encrypt(sessionIt->second.jointPublic, plaintext);
+
+        // Store encrypted vector in session's vector collection
+        sessionIt->second.encryptedVectors.push_back(ciphertext);
+      }
+
+      return true;
+
+    } catch (const std::exception &e) {
+      std::cerr << "[Store] Failed to encrypt vectors for " << userId << ": "
                 << e.what() << "\n";
       return false;
     }
@@ -280,6 +332,22 @@ public:
 
     publicKey = sessionIt->second.jointPublic;
     return {true, publicKey};
+  }
+
+  /**
+   * Retrieves the encrypted vectors for a user
+   *
+   * @param userId User identifier
+   * @return Pair of (success status, reference to encrypted vectors)
+   */
+  std::pair<bool, const std::vector<Ciphertext<DCRTPoly>> *>
+  GetEncryptedVectors(const std::string &userId) const {
+    auto sessionIt = sessions_.find(userId);
+    if (sessionIt == sessions_.end()) {
+      return {false, nullptr};
+    }
+
+    return {true, &sessionIt->second.encryptedVectors};
   }
 
   /**

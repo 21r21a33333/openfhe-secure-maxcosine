@@ -3,10 +3,12 @@
 #include "../include/store.h"
 #include "oneapi/tbb/blocked_range.h"
 #include <chrono>
+#include <cstddef>
 #include <fstream>
 #include <iostream>
 #include <tbb/blocked_range.h>
 #include <tbb/parallel_for.h>
+#include <tbb/parallel_reduce.h>
 
 using namespace lbcrypto;
 using namespace std;
@@ -62,19 +64,17 @@ vector<vector<double>> readDatabaseVectors(ifstream &fileStream,
  * Creates user sessions and encrypts database vectors
  */
 bool setupUserSessions(InMemoryStore &store,
-                       const vector<vector<double>> &dbVectors) {
-  for (size_t i = 0; i < dbVectors.size(); ++i) {
-    string userId = "user_" + to_string(i);
-    cout << "Creating session for " << userId << "...\n";
-
-    auto [success, userSk] = store.CreateUserSession(userId);
-    if (!success) {
-      cerr << "[ERROR] Failed to create session for " << userId << "\n";
-      return false;
-    }
-
-    store.EncryptAndStoreDBVector(userId, dbVectors[i]);
+                       const vector<vector<double>> &dbVectors,
+                       size_t userSecretIndex) {
+  string userId = "user_" + to_string(userSecretIndex);
+  cout << "Creating session for " << userId << "...\n";
+  auto [success, userSk] = store.CreateUserSession(userId);
+  if (!success) {
+    cerr << "[ERROR] Failed to create session for " << userId << "\n";
+    return false;
   }
+  store.EncryptAndStoreDBVectors(userId, dbVectors);
+
   return true;
 }
 
@@ -83,28 +83,29 @@ bool setupUserSessions(InMemoryStore &store,
  */
 vector<Ciphertext<DCRTPoly>> computeEncryptedDotProducts(
     CryptoContext<DCRTPoly> cc, const Plaintext &encQuery,
-    const vector<pair<string, UserSession>> &sessionVec) {
+    const std::vector<Ciphertext<DCRTPoly>> &sessionVec) {
   vector<Ciphertext<DCRTPoly>> encProducts(sessionVec.size());
 
-  tbb::parallel_for(
-      tbb::blocked_range<size_t>(0, sessionVec.size()),
-      [&](const tbb::blocked_range<size_t> &range) {
-        for (size_t i = range.begin(); i < range.end(); ++i) {
-          const auto &session = sessionVec[i].second;
+  tbb::parallel_for(tbb::blocked_range<size_t>(0, sessionVec.size()),
+                    [&](const tbb::blocked_range<size_t> &range) {
+                      for (size_t i = range.begin(); i < range.end(); ++i) {
+                        const auto &session = sessionVec[i];
 
-          // Multiply query with encrypted database vector
-          auto product = cc->EvalMult(encQuery, session.encryptedVector);
+                        // Multiply query with encrypted database vector
+                        auto product = cc->EvalMult(encQuery, session);
 
-          // Sum all elements using rotation (log(n) rotations for n elements)
-          for (int rotationStep = 1;
-               rotationStep < static_cast<int>(VECTOR_DIM); rotationStep *= 2) {
-            auto rotated = cc->EvalRotate(product, rotationStep);
-            product = cc->EvalAdd(product, rotated);
-          }
+                        // Sum all elements using rotation (log(n) rotations for
+                        // n elements)
+                        for (int rotationStep = 1;
+                             rotationStep < static_cast<int>(VECTOR_DIM);
+                             rotationStep *= 2) {
+                          auto rotated = cc->EvalRotate(product, rotationStep);
+                          product = cc->EvalAdd(product, rotated);
+                        }
 
-          encProducts[i] = product;
-        }
-      });
+                        encProducts[i] = product;
+                      }
+                    });
 
   return encProducts;
 }
@@ -115,36 +116,51 @@ vector<Ciphertext<DCRTPoly>> computeEncryptedDotProducts(
 pair<double, string>
 findBestMatch(CryptoContext<DCRTPoly> cc,
               const vector<Ciphertext<DCRTPoly>> &encProducts,
-              const vector<pair<string, UserSession>> &sessionVec,
               const PrivateKey<DCRTPoly> &userSecret,
               const PrivateKey<DCRTPoly> &serverSecret) {
-  double bestSimilarity = -1.0;
-  string bestUserId;
+  std::vector<double> similarities(encProducts.size());
 
-  for (size_t i = 0; i < encProducts.size(); ++i) {
-    try {
-      // Perform multi-party decryption
-      auto userPartial =
-          cc->MultipartyDecryptLead({encProducts[i]}, userSecret);
-      auto serverPartial =
-          cc->MultipartyDecryptMain({encProducts[i]}, serverSecret);
+  // Parallel decryption and extraction using oneTBB
+  tbb::parallel_for(
+      tbb::blocked_range<size_t>(0, encProducts.size()),
+      [&](const tbb::blocked_range<size_t> &range) {
+        for (size_t i = range.begin(); i < range.end(); ++i) {
+          // Perform multi-party decryption
+          auto userPartial =
+              cc->MultipartyDecryptLead({encProducts[i]}, userSecret);
+          auto serverPartial =
+              cc->MultipartyDecryptMain({encProducts[i]}, serverSecret);
 
-      // Fuse partial decryptions and extract result
-      auto fusedResult = FusePartials(cc, userPartial[0], serverPartial[0]);
-      auto values = fusedResult->GetRealPackedValue();
+          // Fuse partial decryptions and extract result
+          auto fusedResult = FusePartials(cc, userPartial[0], serverPartial[0]);
+          auto values = fusedResult->GetRealPackedValue();
+          similarities[i] = values.empty() ? -1.0 : values[0];
+        }
+      });
 
-      if (!values.empty()) {
-        bestSimilarity = values[0];
-        bestUserId = sessionVec[i].first;
-        break; // Found first valid result
-      }
-    } catch (const exception &e) {
-      // Continue to next encrypted product if decryption fails
-      continue;
-    }
-  }
+  // Use oneTBB to find the max similarity and its index
+  struct MaxResult {
+    double value;
+    size_t index;
+  };
 
-  return {bestSimilarity, bestUserId};
+  MaxResult maxRes = tbb::parallel_reduce(
+      tbb::blocked_range<size_t>(0, similarities.size()), MaxResult{-1.0, 0},
+      [&](const tbb::blocked_range<size_t> &range,
+          MaxResult init) -> MaxResult {
+        for (size_t i = range.begin(); i < range.end(); ++i) {
+          if (similarities[i] > init.value) {
+            init.value = similarities[i];
+            init.index = i;
+          }
+        }
+        return init;
+      },
+      [](const MaxResult &a, const MaxResult &b) -> MaxResult {
+        return (a.value > b.value) ? a : b;
+      });
+
+  return {maxRes.value, std::to_string(maxRes.index)};
 }
 
 int main(int argc, char *argv[]) {
@@ -173,34 +189,37 @@ int main(int argc, char *argv[]) {
 
   // Setup encrypted sessions
   cout << "Setting up user sessions and encrypting vectors...\n";
-  if (!setupUserSessions(store, dbVectors)) {
+  if (!setupUserSessions(store, dbVectors, userSecretIndex)) {
     return EXIT_ERROR;
   }
 
   // Prepare encrypted query
   auto encryptedQuery = cryptoContext->MakeCKKSPackedPlaintext(queryVector);
+  string targetUserId = "user_" + to_string(userSecretIndex);
 
   cout << "Beginning similarity search...\n";
-  vector<pair<string, UserSession>> sessionVector(store.sessions_.begin(),
-                                                  store.sessions_.end());
+  auto [success, sessionVectors] = store.GetEncryptedVectors(targetUserId);
+  if (!success) {
+    cerr << "[ERROR] Failed to get encrypted vectors for " << targetUserId
+         << "\n";
+    return EXIT_ERROR;
+  }
 
   // Time the search operation
   auto searchStartTime = chrono::high_resolution_clock::now();
 
   // Compute encrypted dot products in parallel
-  auto encryptedProducts =
-      computeEncryptedDotProducts(cryptoContext, encryptedQuery, sessionVector);
+  auto encryptedProducts = computeEncryptedDotProducts(
+      cryptoContext, encryptedQuery, *sessionVectors);
 
   // Get decryption keys for the specified user
-  string targetUserId = "user_" + to_string(userSecretIndex);
   auto targetUserSession = store.sessions_[targetUserId];
   auto userSecret = targetUserSession.clientSecret;
   auto serverSecret = targetUserSession.serverSecret;
 
   // Find the best matching vector
   auto [bestSimilarity, bestUserId] =
-      findBestMatch(cryptoContext, encryptedProducts, sessionVector, userSecret,
-                    serverSecret);
+      findBestMatch(cryptoContext, encryptedProducts, userSecret, serverSecret);
 
   auto searchEndTime = chrono::high_resolution_clock::now();
   auto searchDuration =
