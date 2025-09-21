@@ -250,20 +250,6 @@ class ScalableSimilaritySearch {
 };
 ```
 
-## Performance Characteristics
-
-### Current Performance (1K vectors)
-
-- **Setup Time**: ~2-3 seconds (key generation + encryption)
-- **Search Time**: ~500-800ms (encrypted computation)
-- **Memory Usage**: ~100MB (in-memory storage)
-
-### Scaling Projections
-
-- **1M vectors**: ~2-5 minutes (with optimizations)
-- **Memory**: ~10GB (with streaming)
-- **Precision**: Maintained < 1e-4 error
-
 ## File Structure
 
 ```
@@ -334,15 +320,6 @@ Enable debug output by setting environment variable:
 export DEBUG=1
 ./Main test_data.dat
 ```
-
-## Contributing
-
-This is a prototype implementation for the Mercle SDE assignment. Key areas for improvement:
-
-1. **Performance Optimization**: GPU acceleration, better memory management
-2. **Security Hardening**: Additional privacy checks, key rotation
-3. **Scalability**: Implement million-scale optimizations
-4. **Testing**: More comprehensive test coverage
 
 ## License
 
