@@ -3,6 +3,7 @@
 #define ENCRYPTED_STORE_H
 
 #include "config.h"
+#include <cmath>
 #include <iostream>
 #include <memory>
 #include <openfhe.h>
@@ -13,27 +14,36 @@
 
 using namespace lbcrypto;
 
+/**
+ * Represents a user session with multiparty homomorphic encryption keys
+ */
 struct UserSession {
-  // joint public key (user + server)
+  // Joint public key shared between user and server
   PublicKey<DCRTPoly> jointPublic;
-  // server's secret share (server keeps only this)
-  PrivateKey<DCRTPoly> serverSecret;
-  // encrypted DB vectors stored under jointPublic (one ciphertext per DB
-  // vector)
-  Ciphertext<DCRTPoly> encryptedVector;
-  // encrypted 1
-  Ciphertext<DCRTPoly> encryptedOne;
 
+  // Server's secret key share (server retains this)
+  PrivateKey<DCRTPoly> serverSecret;
+
+  // Encrypted database vector stored under joint public key
+  Ciphertext<DCRTPoly> encryptedVector;
+
+  // Client's secret key share (for testing/PoC only - normally not stored
+  // server-side)
   PrivateKey<DCRTPoly> clientSecret;
 };
 
 //
-// Crypto + store combined helpers
+// Cryptographic Context Setup
 //
 
-// Initialize CKKS CryptoContext with parameters tuned for ciphertext×ciphertext
-// inner products. You can adjust multiplicative depth & scaling size as
-// required.
+/**
+ * Initializes CKKS cryptographic context optimized for ciphertext operations
+ * and inner product computations with multiparty support
+ *
+ * @param multiplicativeDepth Maximum depth of multiplicative operations
+ * @param scalingModSize Size of scaling modulus for precision control
+ * @return Configured CKKS crypto context
+ */
 inline CryptoContext<DCRTPoly>
 InitCKKSContext(usint multiplicativeDepth = MULT_DEPTH,
                 usint scalingModSize = SCALE_MOD) {
@@ -42,196 +52,320 @@ InitCKKSContext(usint multiplicativeDepth = MULT_DEPTH,
   parameters.SetMultiplicativeDepth(multiplicativeDepth);
   parameters.SetScalingModSize(scalingModSize);
 
-  CryptoContext<DCRTPoly> cc = GenCryptoContext(parameters);
-  cc->Enable(PKE);
-  cc->Enable(KEYSWITCH);
-  cc->Enable(LEVELEDSHE);
-  cc->Enable(ADVANCEDSHE);
-  cc->Enable(MULTIPARTY);
+  auto cryptoContext = GenCryptoContext(parameters);
 
-  return cc;
+  // Enable required homomorphic encryption features
+  cryptoContext->Enable(PKE);         // Public key encryption
+  cryptoContext->Enable(KEYSWITCH);   // Key switching operations
+  cryptoContext->Enable(LEVELEDSHE);  // Leveled somewhat homomorphic encryption
+  cryptoContext->Enable(ADVANCEDSHE); // Advanced operations (rotation, etc.)
+  cryptoContext->Enable(MULTIPARTY);  // Multiparty computation support
+
+  return cryptoContext;
 }
 
+//
+// Utility Functions
+//
+
+/**
+ * Normalizes a vector to unit length for cosine similarity computation
+ *
+ * @param vector Vector to normalize (modified in-place)
+ */
+inline void NormalizeVector(std::vector<double> &vector) {
+  double magnitude = 0.0;
+
+  // Calculate magnitude (L2 norm)
+  for (const double &value : vector) {
+    magnitude += value * value;
+  }
+  magnitude = std::sqrt(magnitude);
+
+  // Normalize if magnitude is non-zero
+  if (magnitude > 0.0) {
+    for (double &value : vector) {
+      value /= magnitude;
+    }
+  }
+}
+
+/**
+ * Generates binary rotation factors for efficient vector operations
+ * Used for log(n) rotation-based summation in dot product computation
+ *
+ * @param vectorDimension Dimension of vectors being processed
+ * @return Vector of rotation indices for binary tree summation
+ */
+inline std::vector<int> GenerateBinaryRotationFactors(size_t vectorDimension) {
+  std::vector<int> rotationFactors;
+
+  for (int i = 1; i < static_cast<int>(vectorDimension); i *= 2) {
+    rotationFactors.push_back(i);
+    rotationFactors.push_back(-i);
+  }
+
+  return rotationFactors;
+}
+
+//
+// In-Memory Encrypted Store
+//
+
+/**
+ * In-memory store for managing encrypted user sessions and database vectors
+ * Supports multiparty homomorphic encryption with joint key generation
+ */
 class InMemoryStore {
 public:
+  // Public access to user sessions (for compatibility with existing code)
   std::unordered_map<std::string, UserSession> sessions_;
-  InMemoryStore(const CryptoContext<DCRTPoly> &cc = InitCKKSContext())
-      : cc_(cc) {}
 
+  /**
+   * Constructs store with given cryptographic context
+   *
+   * @param cryptoContext CKKS context for encryption operations
+   */
+  explicit InMemoryStore(
+      const CryptoContext<DCRTPoly> &cryptoContext = InitCKKSContext())
+      : cryptoContext_(cryptoContext) {}
+
+  /**
+   * Creates a new multiparty user session with joint key generation
+   * Implements two-party key generation protocol between client and server
+   *
+   * @param userId Unique identifier for the user
+   * @return Pair of (success status, client's secret key to return to user)
+   */
   std::pair<bool, PrivateKey<DCRTPoly>>
   CreateUserSession(const std::string &userId) {
-
+    // Check if user already exists
     if (sessions_.count(userId)) {
-      std::cerr << "[store] userId already exists: " << userId << "\n";
+      std::cerr << "[Store] User ID already exists: " << userId << "\n";
       return {false, PrivateKey<DCRTPoly>()};
     }
 
-    // Generates rotation evaluation keys for a list of indices.
-    std::vector<int> binaryRotationFactors;
-    for (int i = 1; i < int(VECTOR_DIM); i *= 2) {
-      binaryRotationFactors.push_back(i);
-      binaryRotationFactors.push_back(-i);
+    try {
+      // Generate rotation keys for efficient vector operations
+      auto rotationFactors = GenerateBinaryRotationFactors(VECTOR_DIM);
+
+      // Step 1: Client generates initial key pair
+      auto clientKeyPair = cryptoContext_->KeyGen();
+
+      // Step 2: Generate evaluation keys for client
+      auto clientEvalMultKey = cryptoContext_->KeySwitchGen(
+          clientKeyPair.secretKey, clientKeyPair.secretKey);
+
+      // Generate sum evaluation keys for client
+      cryptoContext_->EvalSumKeyGen(clientKeyPair.secretKey);
+      auto clientEvalSumKeys =
+          std::make_shared<std::map<usint, EvalKey<DCRTPoly>>>(
+              cryptoContext_->GetEvalSumKeyMap(
+                  clientKeyPair.secretKey->GetKeyTag()));
+
+      // Step 3: Server generates multiparty keys
+      auto serverKeyPair =
+          cryptoContext_->MultipartyKeyGen(clientKeyPair.publicKey);
+
+      // Generate server's evaluation keys
+      auto serverEvalMultKey = cryptoContext_->MultiKeySwitchGen(
+          serverKeyPair.secretKey, serverKeyPair.secretKey, clientEvalMultKey);
+
+      // Step 4: Combine evaluation keys
+      auto jointEvalMultKey = cryptoContext_->MultiAddEvalKeys(
+          clientEvalMultKey, serverEvalMultKey,
+          serverKeyPair.publicKey->GetKeyTag());
+
+      auto serverMultKey = cryptoContext_->MultiMultEvalKey(
+          serverKeyPair.secretKey, jointEvalMultKey,
+          serverKeyPair.publicKey->GetKeyTag());
+
+      // Generate and combine sum evaluation keys
+      auto serverEvalSumKeys = cryptoContext_->MultiEvalSumKeyGen(
+          serverKeyPair.secretKey, clientEvalSumKeys,
+          serverKeyPair.publicKey->GetKeyTag());
+
+      auto jointEvalSumKeys = cryptoContext_->MultiAddEvalSumKeys(
+          clientEvalSumKeys, serverEvalSumKeys,
+          serverKeyPair.publicKey->GetKeyTag());
+
+      // Install combined evaluation keys in context
+      cryptoContext_->InsertEvalSumKey(jointEvalSumKeys);
+
+      auto clientMultKey = cryptoContext_->MultiMultEvalKey(
+          clientKeyPair.secretKey, jointEvalMultKey,
+          serverKeyPair.publicKey->GetKeyTag());
+
+      auto finalEvalMultKey = cryptoContext_->MultiAddEvalMultKeys(
+          clientMultKey, serverMultKey, jointEvalMultKey->GetKeyTag());
+
+      cryptoContext_->InsertEvalMultKey({finalEvalMultKey});
+
+      // Step 5: Create and store user session
+      UserSession session;
+      session.jointPublic = serverKeyPair.publicKey;
+      session.serverSecret = serverKeyPair.secretKey;
+      session.clientSecret = clientKeyPair.secretKey;
+
+      sessions_[userId] = std::move(session);
+
+      // Return client's secret key (to be sent to user)
+      return {true, clientKeyPair.secretKey};
+
+    } catch (const std::exception &e) {
+      std::cerr << "[Store] Failed to create session for " << userId << ": "
+                << e.what() << "\n";
+      return {false, PrivateKey<DCRTPoly>()};
     }
-
-    KeyPair<DCRTPoly> kp1;
-    KeyPair<DCRTPoly> kp2;
-
-    KeyPair<DCRTPoly> kpMultiparty;
-    kp1 = cc_->KeyGen();
-
-    // Generate evalmult key part for A
-    auto evalMultKey = cc_->KeySwitchGen(kp1.secretKey, kp1.secretKey);
-
-    // Generate evalsum key part for A
-    cc_->EvalSumKeyGen(kp1.secretKey);
-    auto evalSumKeys = std::make_shared<std::map<usint, EvalKey<DCRTPoly>>>(
-        cc_->GetEvalSumKeyMap(kp1.secretKey->GetKeyTag()));
-
-    // Round 2 (party B)
-    kp2 = cc_->MultipartyKeyGen(kp1.publicKey);
-
-    auto evalMultKey2 =
-        cc_->MultiKeySwitchGen(kp2.secretKey, kp2.secretKey, evalMultKey);
-    auto evalMultAB = cc_->MultiAddEvalKeys(evalMultKey, evalMultKey2,
-                                            kp2.publicKey->GetKeyTag());
-
-    auto evalMultBAB = cc_->MultiMultEvalKey(kp2.secretKey, evalMultAB,
-                                             kp2.publicKey->GetKeyTag());
-
-    auto evalSumKeysB = cc_->MultiEvalSumKeyGen(kp2.secretKey, evalSumKeys,
-                                                kp2.publicKey->GetKeyTag());
-
-    auto evalSumKeysJoin = cc_->MultiAddEvalSumKeys(evalSumKeys, evalSumKeysB,
-                                                    kp2.publicKey->GetKeyTag());
-
-    cc_->InsertEvalSumKey(evalSumKeysJoin);
-
-    auto evalMultAAB = cc_->MultiMultEvalKey(kp1.secretKey, evalMultAB,
-                                             kp2.publicKey->GetKeyTag());
-
-    auto evalMultFinal = cc_->MultiAddEvalMultKeys(evalMultAAB, evalMultBAB,
-                                                   evalMultAB->GetKeyTag());
-
-    cc_->InsertEvalMultKey({evalMultFinal});
-
-    UserSession s;
-    s.jointPublic = kp2.publicKey;
-    s.serverSecret = kp2.secretKey;
-    s.clientSecret = kp1.secretKey;
-
-    // create a plain text with VECTOR_DIM {}
-    Plaintext p =
-        cc_->MakeCKKSPackedPlaintext(std::vector<double>(VECTOR_DIM, 1));
-    s.encryptedOne = cc_->Encrypt(kp2.publicKey, p);
-    sessions_[userId] = std::move(s);
-    // Return user secret to the caller (simulate handing to user).
-    return {true, kp1.secretKey};
   }
 
-  // Encrypt and store DB vectors under the joint public key for userId.
-  // Input: vectors (each of dim VECTOR_DIM). They will be normalized
-  // internally.
+  /**
+   * Encrypts and stores a database vector for a specific user
+   * Vector is normalized before encryption for cosine similarity computation
+   *
+   * @param userId User identifier
+   * @param vector Database vector to encrypt and store
+   * @return Success status
+   */
   bool EncryptAndStoreDBVector(const std::string &userId,
-                               const std::vector<double> &v) {
-    auto it = sessions_.find(userId);
-    if (it == sessions_.end()) {
-      return false;
-    }
-    UserSession &sess = it->second;
-
-    if (v.size() != VECTOR_DIM) {
+                               const std::vector<double> &vector) {
+    auto sessionIt = sessions_.find(userId);
+    if (sessionIt == sessions_.end()) {
+      std::cerr << "[Store] User session not found: " << userId << "\n";
       return false;
     }
 
-    std::vector<double> tmp = v;
-    NormalizePlaintext(tmp);
+    if (vector.size() != VECTOR_DIM) {
+      std::cerr << "[Store] Vector dimension mismatch. Expected: " << VECTOR_DIM
+                << ", Got: " << vector.size() << "\n";
+      return false;
+    }
 
-    Plaintext p = cc_->MakeCKKSPackedPlaintext(tmp);
-    Ciphertext<DCRTPoly> ct = cc_->Encrypt(sess.jointPublic, p);
-    sess.encryptedVector = ct;
-    return true;
+    try {
+      // Normalize vector for cosine similarity
+      std::vector<double> normalizedVector = vector;
+      NormalizeVector(normalizedVector);
+
+      // Create plaintext and encrypt under joint public key
+      auto plaintext =
+          cryptoContext_->MakeCKKSPackedPlaintext(normalizedVector);
+      auto ciphertext =
+          cryptoContext_->Encrypt(sessionIt->second.jointPublic, plaintext);
+
+      // Store encrypted vector in session
+      sessionIt->second.encryptedVector = ciphertext;
+      return true;
+
+    } catch (const std::exception &e) {
+      std::cerr << "[Store] Failed to encrypt vector for " << userId << ": "
+                << e.what() << "\n";
+      return false;
+    }
   }
 
-  // Utility: expose joint public key for a user (so the real user can encrypt
-  // under it)
+  /**
+   * Retrieves the joint public key for a user (for client-side encryption)
+   *
+   * @param userId User identifier
+   * @param[out] publicKey Output parameter for the joint public key
+   * @return Pair of (success status, joint public key)
+   */
   std::pair<bool, PublicKey<DCRTPoly>>
-  GetJointPublic(const std::string &userId, PublicKey<DCRTPoly> &outPub) const {
-    auto it = sessions_.find(userId);
-    if (it == sessions_.end()) {
+  GetJointPublic(const std::string &userId,
+                 PublicKey<DCRTPoly> &publicKey) const {
+    auto sessionIt = sessions_.find(userId);
+    if (sessionIt == sessions_.end()) {
       return {false, PublicKey<DCRTPoly>()};
     }
-    outPub = it->second.jointPublic;
-    return {true, outPub};
+
+    publicKey = sessionIt->second.jointPublic;
+    return {true, publicKey};
+  }
+
+  /**
+   * Gets the number of active user sessions
+   *
+   * @return Number of sessions
+   */
+  size_t GetSessionCount() const { return sessions_.size(); }
+
+  /**
+   * Checks if a user session exists
+   *
+   * @param userId User identifier to check
+   * @return True if session exists
+   */
+  bool HasSession(const std::string &userId) const {
+    return sessions_.find(userId) != sessions_.end();
   }
 
 private:
-  // Normalize to unit vector for inner product -> cosine similarity
-  static void NormalizePlaintext(std::vector<double> &v) {
-    double mag = 0.0;
-    for (double x : v) {
-      mag += x * x;
-    }
-    mag = sqrt(mag);
-    if (mag > 0) {
-      for (double &x : v) {
-        x /= mag;
-      }
-    }
-  }
-
-  const CryptoContext<DCRTPoly> cc_;
+  const CryptoContext<DCRTPoly> cryptoContext_;
 };
 
 //
-// High-level helpers intended to be used by client/main code
+// Client-Side Helper Functions
 //
 
-// Encrypt a vector under a given joint public key (client-side).
+/**
+ * Encrypts a vector under a joint public key (client-side operation)
+ * Vector is automatically normalized for cosine similarity computation
+ *
+ * @param cryptoContext CKKS crypto context
+ * @param jointPublicKey Joint public key obtained from server
+ * @param vector Vector to encrypt
+ * @return Encrypted vector ciphertext
+ */
 inline Ciphertext<DCRTPoly>
-EncryptVectorForUser(const CryptoContext<DCRTPoly> &cc,
-                     const PublicKey<DCRTPoly> &jointPub,
-                     const std::vector<double> &vec) {
-  std::vector<double> tmp = vec;
-  // normalize
-  double mag = 0.0;
-  for (double x : tmp) {
-    mag += x * x;
-  }
-  mag = sqrt(mag);
-  if (mag > 0) {
-    for (double &x : tmp) {
-      x /= mag;
-    }
-  }
+EncryptVectorForUser(const CryptoContext<DCRTPoly> &cryptoContext,
+                     const PublicKey<DCRTPoly> &jointPublicKey,
+                     const std::vector<double> &vector) {
+  // Normalize vector for cosine similarity
+  std::vector<double> normalizedVector = vector;
+  NormalizeVector(normalizedVector);
 
-  Plaintext p = cc->MakeCKKSPackedPlaintext(tmp);
-  return cc->Encrypt(jointPub, p);
+  // Create plaintext and encrypt
+  auto plaintext = cryptoContext->MakeCKKSPackedPlaintext(normalizedVector);
+  return cryptoContext->Encrypt(jointPublicKey, plaintext);
 }
 
-// User-side: produce lead partial for inner-product ciphertexts given user's
-// secret share. Returns vector of ciphertext partials (one per ciphertext).
-Ciphertext<DCRTPoly> UserLeadPartial(const CryptoContext<DCRTPoly> &cc,
-                                     const PrivateKey<DCRTPoly> &userSecret,
-                                     Ciphertext<DCRTPoly> &innerCt) {
-
-  return cc->MultipartyDecryptLead({innerCt}, userSecret)[0];
+/**
+ * Generates user's partial decryption for multiparty computation
+ * Used in the first phase of two-party decryption protocol
+ *
+ * @param cryptoContext CKKS crypto context
+ * @param userSecret User's secret key share
+ * @param ciphertext Ciphertext to partially decrypt
+ * @return User's partial decryption
+ */
+inline Ciphertext<DCRTPoly>
+UserLeadPartial(const CryptoContext<DCRTPoly> &cryptoContext,
+                const PrivateKey<DCRTPoly> &userSecret,
+                Ciphertext<DCRTPoly> &ciphertext) {
+  return cryptoContext->MultipartyDecryptLead({ciphertext}, userSecret)[0];
 }
 
-// Fuse user + server partials to produce plaintexts (user performs this
-// locally). Assumes userPartials and serverPartials are same length and
-// aligned.
-inline Plaintext FusePartials(const CryptoContext<DCRTPoly> &cc,
+/**
+ * Fuses user and server partial decryptions to recover plaintext
+ * Final step in two-party decryption protocol
+ *
+ * @param cryptoContext CKKS crypto context
+ * @param userPartial User's partial decryption
+ * @param serverPartial Server's partial decryption
+ * @return Recovered plaintext
+ */
+inline Plaintext FusePartials(const CryptoContext<DCRTPoly> &cryptoContext,
                               Ciphertext<DCRTPoly> &userPartial,
                               Ciphertext<DCRTPoly> &serverPartial) {
+  std::vector<Ciphertext<DCRTPoly>> partials{userPartial, serverPartial};
 
-  std::vector<Ciphertext<DCRTPoly>> parts;
-  parts.push_back(userPartial);
-  parts.push_back(serverPartial);
-  Plaintext out;
-  cc->MultipartyDecryptFusion(parts, &out);
-  // Make sure length is 1 (inner product placed in first slot)
-  out->SetLength(1);
-  return out;
+  Plaintext result;
+  cryptoContext->MultipartyDecryptFusion(partials, &result);
+
+  // Set length to 1 (inner product result is in first slot)
+  result->SetLength(1);
+
+  return result;
 }
 
 #endif // ENCRYPTED_STORE_H

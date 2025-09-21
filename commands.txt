@@ -1,4 +1,4 @@
-node ./scripts/generate_data.js test_data.dat 1000 800
+node ./scripts/generate_data.js test_data.dat 100 64
 
 
 mkdir build 

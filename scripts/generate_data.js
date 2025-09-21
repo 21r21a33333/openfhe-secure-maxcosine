@@ -63,7 +63,8 @@ const generateDataset = async ({ filepath, size, similarityIndex }) => {
 
     // Write the size as the first line
     stream.write(`${size}\n`);
-
+    // Write the index of the similarity vector
+    stream.write(`${similarityIndex}\n`);
     // Write the query vector
     stream.write(generateQueryVector() + '\n');
 
