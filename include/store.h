@@ -118,7 +118,7 @@ class InMemoryStore {
 public:
   // Public access to user sessions (for compatibility with existing code)
   std::unordered_map<std::string, UserSession> sessions_;
-
+  const CryptoContext<DCRTPoly> cryptoContext_;
   /**
    * Constructs store with given cryptographic context
    *
@@ -464,9 +464,6 @@ public:
   bool HasSession(const std::string &userId) const {
     return sessions_.find(userId) != sessions_.end();
   }
-
-private:
-  const CryptoContext<DCRTPoly> cryptoContext_;
 };
 
 //
