@@ -111,13 +111,13 @@ vector<Ciphertext<DCRTPoly>> computeEncryptedDotProducts(
 }
 
 /**
- * Attempts to decrypt similarity scores and find the best match
+ * Attempts to decrypt similarity scores and find the best match using 8-party
+ * decryption
  */
 pair<double, string>
-findBestMatch(CryptoContext<DCRTPoly> cc,
+findBestMatch(InMemoryStore &store,
               const vector<Ciphertext<DCRTPoly>> &encProducts,
-              const PrivateKey<DCRTPoly> &userSecret,
-              const PrivateKey<DCRTPoly> &serverSecret) {
+              const string &userId) {
   std::vector<double> similarities(encProducts.size());
 
   // Parallel decryption and extraction using oneTBB
@@ -125,16 +125,18 @@ findBestMatch(CryptoContext<DCRTPoly> cc,
       tbb::blocked_range<size_t>(0, encProducts.size()),
       [&](const tbb::blocked_range<size_t> &range) {
         for (size_t i = range.begin(); i < range.end(); ++i) {
-          // Perform multi-party decryption
-          auto userPartial =
-              cc->MultipartyDecryptLead({encProducts[i]}, userSecret);
-          auto serverPartial =
-              cc->MultipartyDecryptMain({encProducts[i]}, serverSecret);
-
-          // Fuse partial decryptions and extract result
-          auto fusedResult = FusePartials(cc, userPartial[0], serverPartial[0]);
-          auto values = fusedResult->GetRealPackedValue();
-          similarities[i] = values.empty() ? -1.0 : values[0];
+          try {
+            // Perform 8-party decryption using the store's MultiPartyDecrypt8
+            // method
+            auto decryptedResult = store.MultiPartyDecrypt8(
+                userId, const_cast<Ciphertext<DCRTPoly> &>(encProducts[i]));
+            auto values = decryptedResult->GetRealPackedValue();
+            similarities[i] = values.empty() ? -1.0 : values[0];
+          } catch (const std::exception &e) {
+            std::cerr << "[ERROR] Decryption failed for vector " << i << ": "
+                      << e.what() << "\n";
+            similarities[i] = -1.0;
+          }
         }
       });
 
@@ -212,14 +214,9 @@ int main(int argc, char *argv[]) {
   auto encryptedProducts = computeEncryptedDotProducts(
       cryptoContext, encryptedQuery, *sessionVectors);
 
-  // Get decryption keys for the specified user
-  auto targetUserSession = store.sessions_[targetUserId];
-  auto userSecret = targetUserSession.clientSecret;
-  auto serverSecret = targetUserSession.serverSecret;
-
-  // Find the best matching vector
+  // Find the best matching vector using 8-party decryption
   auto [bestSimilarity, bestUserId] =
-      findBestMatch(cryptoContext, encryptedProducts, userSecret, serverSecret);
+      findBestMatch(store, encryptedProducts, targetUserId);
 
   auto searchEndTime = chrono::high_resolution_clock::now();
   auto searchDuration =

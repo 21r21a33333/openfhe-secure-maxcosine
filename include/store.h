@@ -14,11 +14,9 @@
 
 using namespace lbcrypto;
 
-/**
- * Represents a user session with multiparty homomorphic encryption keys
- */
+// Updated UserSession structure for 8-party protocol
 struct UserSession {
-  // Joint public key shared between user and server
+  // Joint public key shared among all 8 parties
   PublicKey<DCRTPoly> jointPublic;
 
   // Server's secret key share (server retains this)
@@ -27,9 +25,9 @@ struct UserSession {
   // Multiple encrypted database vectors stored under joint public key
   std::vector<Ciphertext<DCRTPoly>> encryptedVectors;
 
-  // Client's secret key share (for testing/PoC only - normally not stored
-  // server-side)
-  PrivateKey<DCRTPoly> clientSecret;
+  // All party secret keys (for testing/PoC only - normally only server key
+  // stored)
+  std::vector<PrivateKey<DCRTPoly>> partySecrets;
 };
 
 //
@@ -131,91 +129,191 @@ public:
       : cryptoContext_(cryptoContext) {}
 
   /**
-   * Creates a new multiparty user session with joint key generation
-   * Implements two-party key generation protocol between client and server
+   * Creates a new 8-party user session with joint key generation
+   * Implements multi-party key generation protocol among 8 parties
    *
    * @param userId Unique identifier for the user
-   * @return Pair of (success status, client's secret key to return to user)
+   * @return Pair of (success status, vector of all party secret keys)
    */
-  std::pair<bool, PrivateKey<DCRTPoly>>
+  std::pair<bool, std::vector<PrivateKey<DCRTPoly>>>
   CreateUserSession(const std::string &userId) {
     // Check if user already exists
     if (sessions_.count(userId)) {
       std::cerr << "[Store] User ID already exists: " << userId << "\n";
-      return {false, PrivateKey<DCRTPoly>()};
+      return {false, std::vector<PrivateKey<DCRTPoly>>()};
     }
 
     try {
+      const usint numParties = 8;
+
       // Generate rotation keys for efficient vector operations
       auto rotationFactors = GenerateBinaryRotationFactors(VECTOR_DIM);
 
-      // Step 1: Client generates initial key pair
-      auto clientKeyPair = cryptoContext_->KeyGen();
+      // Initialize key pairs for all 8 parties
+      std::vector<KeyPair<DCRTPoly>> partyKeyPairs(numParties);
 
-      // Step 2: Generate evaluation keys for client
-      auto clientEvalMultKey = cryptoContext_->KeySwitchGen(
-          clientKeyPair.secretKey, clientKeyPair.secretKey);
+      // ============================================================
+      // ROUND 1: Party 0 (Lead party) generates initial key pair
+      // ============================================================
+      partyKeyPairs[0] = cryptoContext_->KeyGen();
 
-      // Generate sum evaluation keys for client
-      cryptoContext_->EvalSumKeyGen(clientKeyPair.secretKey);
-      auto clientEvalSumKeys =
-          std::make_shared<std::map<usint, EvalKey<DCRTPoly>>>(
-              cryptoContext_->GetEvalSumKeyMap(
-                  clientKeyPair.secretKey->GetKeyTag()));
+      // Generate evaluation keys for Party 0
+      auto evalMultKey = cryptoContext_->KeySwitchGen(
+          partyKeyPairs[0].secretKey, partyKeyPairs[0].secretKey);
 
-      // Step 3: Server generates multiparty keys
-      auto serverKeyPair =
-          cryptoContext_->MultipartyKeyGen(clientKeyPair.publicKey);
+      // Generate sum evaluation keys for Party 0
+      cryptoContext_->EvalSumKeyGen(partyKeyPairs[0].secretKey);
+      auto evalSumKeys = std::make_shared<std::map<usint, EvalKey<DCRTPoly>>>(
+          cryptoContext_->GetEvalSumKeyMap(
+              partyKeyPairs[0].secretKey->GetKeyTag()));
 
-      // Generate server's evaluation keys
-      auto serverEvalMultKey = cryptoContext_->MultiKeySwitchGen(
-          serverKeyPair.secretKey, serverKeyPair.secretKey, clientEvalMultKey);
+      // Current accumulated keys (will be updated in each round)
+      auto currentEvalMultKey = evalMultKey;
+      auto currentEvalSumKeys = evalSumKeys;
+      auto currentPublicKey = partyKeyPairs[0].publicKey;
 
-      // Step 4: Combine evaluation keys
-      auto jointEvalMultKey = cryptoContext_->MultiAddEvalKeys(
-          clientEvalMultKey, serverEvalMultKey,
-          serverKeyPair.publicKey->GetKeyTag());
+      // ============================================================
+      // ROUNDS 2-8: Sequential multi-party key generation
+      // ============================================================
+      for (usint party = 1; party < numParties; party++) {
+        std::cout << "[Store] Processing party " << party + 1 << " of "
+                  << numParties << "\n";
 
-      auto serverMultKey = cryptoContext_->MultiMultEvalKey(
-          serverKeyPair.secretKey, jointEvalMultKey,
-          serverKeyPair.publicKey->GetKeyTag());
+        // Generate key pair for current party
+        partyKeyPairs[party] =
+            cryptoContext_->MultipartyKeyGen(currentPublicKey);
 
-      // Generate and combine sum evaluation keys
-      auto serverEvalSumKeys = cryptoContext_->MultiEvalSumKeyGen(
-          serverKeyPair.secretKey, clientEvalSumKeys,
-          serverKeyPair.publicKey->GetKeyTag());
+        // Generate evaluation keys for current party
+        auto partyEvalMultKey = cryptoContext_->MultiKeySwitchGen(
+            partyKeyPairs[party].secretKey, partyKeyPairs[party].secretKey,
+            currentEvalMultKey);
 
-      auto jointEvalSumKeys = cryptoContext_->MultiAddEvalSumKeys(
-          clientEvalSumKeys, serverEvalSumKeys,
-          serverKeyPair.publicKey->GetKeyTag());
+        // Combine evaluation mult keys
+        auto combinedEvalMultKey = cryptoContext_->MultiAddEvalKeys(
+            currentEvalMultKey, partyEvalMultKey,
+            partyKeyPairs[party].publicKey->GetKeyTag());
 
-      // Install combined evaluation keys in context
-      cryptoContext_->InsertEvalSumKey(jointEvalSumKeys);
+        // Generate multiplication evaluation keys for all previous parties
+        std::vector<EvalKey<DCRTPoly>> multKeys;
 
-      auto clientMultKey = cryptoContext_->MultiMultEvalKey(
-          clientKeyPair.secretKey, jointEvalMultKey,
-          serverKeyPair.publicKey->GetKeyTag());
+        // Add mult keys for all previous parties (including current)
+        for (usint prevParty = 0; prevParty <= party; prevParty++) {
+          auto multKey = cryptoContext_->MultiMultEvalKey(
+              partyKeyPairs[prevParty].secretKey, combinedEvalMultKey,
+              partyKeyPairs[party].publicKey->GetKeyTag());
+          multKeys.push_back(multKey);
+        }
 
-      auto finalEvalMultKey = cryptoContext_->MultiAddEvalMultKeys(
-          clientMultKey, serverMultKey, jointEvalMultKey->GetKeyTag());
+        // Combine all multiplication keys
+        auto finalMultKey = multKeys[0];
+        for (usint i = 1; i < multKeys.size(); i++) {
+          finalMultKey = cryptoContext_->MultiAddEvalMultKeys(
+              finalMultKey, multKeys[i], multKeys[i]->GetKeyTag());
+        }
 
-      cryptoContext_->InsertEvalMultKey({finalEvalMultKey});
+        // Generate and combine sum evaluation keys
+        auto partyEvalSumKeys = cryptoContext_->MultiEvalSumKeyGen(
+            partyKeyPairs[party].secretKey, currentEvalSumKeys,
+            partyKeyPairs[party].publicKey->GetKeyTag());
 
-      // Step 5: Create and store user session
+        auto combinedEvalSumKeys = cryptoContext_->MultiAddEvalSumKeys(
+            currentEvalSumKeys, partyEvalSumKeys,
+            partyKeyPairs[party].publicKey->GetKeyTag());
+
+        // Install combined keys in context (for final party only)
+        if (party == numParties - 1) {
+          cryptoContext_->InsertEvalSumKey(combinedEvalSumKeys);
+          cryptoContext_->InsertEvalMultKey({finalMultKey});
+        }
+
+        // Update current keys for next iteration
+        currentEvalMultKey = combinedEvalMultKey;
+        currentEvalSumKeys = combinedEvalSumKeys;
+        currentPublicKey = partyKeyPairs[party].publicKey;
+      }
+
+      // ============================================================
+      // Create and store user session
+      // ============================================================
       UserSession session;
-      session.jointPublic = serverKeyPair.publicKey;
-      session.serverSecret = serverKeyPair.secretKey;
-      session.clientSecret = clientKeyPair.secretKey;
+      session.jointPublic =
+          currentPublicKey; // Final public key from last party
+      session.serverSecret = partyKeyPairs[numParties - 1]
+                                 .secretKey; // Server holds last party's secret
+
+      // Store all party secrets (for testing/PoC)
+      session.partySecrets.reserve(numParties);
+      for (const auto &kp : partyKeyPairs) {
+        session.partySecrets.push_back(kp.secretKey);
+      }
 
       sessions_[userId] = std::move(session);
 
-      // Return client's secret key (to be sent to user)
-      return {true, clientKeyPair.secretKey};
+      // Return all secret keys
+      std::vector<PrivateKey<DCRTPoly>> allSecrets;
+      allSecrets.reserve(numParties);
+      for (const auto &kp : partyKeyPairs) {
+        allSecrets.push_back(kp.secretKey);
+      }
+
+      std::cout << "[Store] Successfully created 8-party session for " << userId
+                << "\n";
+      return {true, allSecrets};
 
     } catch (const std::exception &e) {
-      std::cerr << "[Store] Failed to create session for " << userId << ": "
-                << e.what() << "\n";
-      return {false, PrivateKey<DCRTPoly>()};
+      std::cerr << "[Store] Failed to create 8-party session for " << userId
+                << ": " << e.what() << "\n";
+      return {false, std::vector<PrivateKey<DCRTPoly>>()};
+    }
+  }
+
+  /**
+   * Enhanced multi-party decryption for 8 parties
+   *
+   * @param userId User identifier
+   * @param ciphertext Ciphertext to decrypt
+   * @return Decrypted plaintext
+   */
+  Plaintext MultiPartyDecrypt8(const std::string &userId,
+                               Ciphertext<DCRTPoly> &ciphertext) {
+    auto sessionIt = sessions_.find(userId);
+    if (sessionIt == sessions_.end()) {
+      throw std::runtime_error("User session not found: " + userId);
+    }
+
+    const auto &partySecrets = sessionIt->second.partySecrets;
+    const usint numParties = partySecrets.size();
+
+    if (numParties != 8) {
+      throw std::runtime_error("Expected 8 parties, found: " +
+                               std::to_string(numParties));
+    }
+
+    try {
+      // Perform partial decryption for parties 0 to 6
+      std::vector<Ciphertext<DCRTPoly>> partialCiphertexts;
+      partialCiphertexts.reserve(numParties);
+
+      for (usint party = 0; party < numParties - 1; party++) {
+        auto partial = cryptoContext_->MultipartyDecryptMain(
+            {ciphertext}, partySecrets[party]);
+        partialCiphertexts.push_back(partial[0]);
+      }
+
+      // Final party (party 7) performs lead decryption
+      auto leadPartial = cryptoContext_->MultipartyDecryptLead(
+          {ciphertext}, partySecrets[numParties - 1]);
+      partialCiphertexts.push_back(leadPartial[0]);
+
+      // Fuse all partial decryptions
+      Plaintext result;
+      cryptoContext_->MultipartyDecryptFusion(partialCiphertexts, &result);
+
+      return result;
+
+    } catch (const std::exception &e) {
+      throw std::runtime_error("Multi-party decryption failed: " +
+                               std::string(e.what()));
     }
   }
 
