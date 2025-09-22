@@ -92,17 +92,24 @@ findHomomorphicMax(const std::vector<Ciphertext<DCRTPoly>> &ciphertexts,
   std::vector<Ciphertext<DCRTPoly>> workingSet = ciphertexts;
 
   // Tournament-style maximum finding
+  size_t round = 1;
   while (workingSet.size() > 1) {
+    std::cout << "[findHomomorphicMax] Round " << round
+              << ": workingSet size = " << workingSet.size() << std::endl;
     std::vector<Ciphertext<DCRTPoly>> nextRound;
 
     // Process pairs
     for (size_t i = 0; i < workingSet.size(); i += 2) {
       if (i + 1 < workingSet.size()) {
+        std::cout << "[findHomomorphicMax]   Comparing indices " << i << " and "
+                  << (i + 1) << std::endl;
         // Compare two ciphertexts and get the maximum
         auto maxCipher =
             homomorphicMaxTwo(workingSet[i], workingSet[i + 1], context);
         nextRound.push_back(maxCipher);
       } else {
+        std::cout << "[findHomomorphicMax]   Carrying forward index " << i
+                  << std::endl;
         // Odd element, carry forward
         nextRound.push_back(workingSet[i]);
       }
