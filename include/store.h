@@ -46,9 +46,23 @@ inline CryptoContext<DCRTPoly>
 InitCKKSContext(usint multiplicativeDepth = MULT_DEPTH,
                 usint scalingModSize = SCALE_MOD) {
   CCParams<CryptoContextCKKSRNS> parameters;
+  SecretKeyDist secretKeyDist = UNIFORM_TERNARY;
+  parameters.SetSecretKeyDist(secretKeyDist);
   parameters.SetSecurityLevel(HEStd_128_classic);
   parameters.SetMultiplicativeDepth(multiplicativeDepth);
   parameters.SetScalingModSize(scalingModSize);
+  parameters.SetScalingTechnique(ScalingTechnique::FLEXIBLEAUTOEXT);
+  parameters.SetFirstModSize(FIRST_MOD_SIZE);
+  parameters.SetKeySwitchTechnique(KeySwitchTechnique::HYBRID);
+  parameters.SetBatchSize(VECTOR_DIM);
+  
+  // Set noise estimate for better precision
+  parameters.SetNoiseEstimate(3.2);
+  
+  // Let OpenFHE choose appropriate ring dimension based on security requirements
+  
+  auto compressionLevel = COMPRESSION_LEVEL::COMPACT;
+  parameters.SetInteractiveBootCompressionLevel(compressionLevel);
 
   auto cryptoContext = GenCryptoContext(parameters);
 
@@ -161,6 +175,9 @@ public:
       auto evalMultKey = cryptoContext_->KeySwitchGen(
           partyKeyPairs[0].secretKey, partyKeyPairs[0].secretKey);
 
+      // Generate rotation keys for Party 0
+      cryptoContext_->EvalRotateKeyGen(partyKeyPairs[0].secretKey, rotationFactors);
+      
       // Generate sum evaluation keys for Party 0
       cryptoContext_->EvalSumKeyGen(partyKeyPairs[0].secretKey);
       auto evalSumKeys = std::make_shared<std::map<usint, EvalKey<DCRTPoly>>>(

@@ -32,13 +32,19 @@ std::vector<double> generateMaxChebyshevCoefficients() {
  * Approximates max(0, x) which is useful for pairwise max computation
  */
 Ciphertext<DCRTPoly> homomorphicReLU(const Ciphertext<DCRTPoly> &x,
-                                     CryptoContext<DCRTPoly> context) {
+                                     const CryptoContext<DCRTPoly> &context) {
 
   auto coefficients = generateMaxChebyshevCoefficients();
   double a = -2.0; // Input range lower bound
   double b = 2.0;  // Input range upper bound
 
-  return context->EvalChebyshevSeries(x, coefficients, a, b);
+  auto series = context->EvalChebyshevSeries(x, coefficients, a, b);
+
+  // Check if we have enough levels before adjusting scale
+  if (series->GetLevel() > 0) {
+    context->IntMPBootAdjustScale(series);
+  }
+  return series;
 }
 
 /**
@@ -48,7 +54,7 @@ Ciphertext<DCRTPoly> homomorphicReLU(const Ciphertext<DCRTPoly> &x,
  */
 Ciphertext<DCRTPoly> homomorphicMaxTwo(const Ciphertext<DCRTPoly> &a,
                                        const Ciphertext<DCRTPoly> &b,
-                                       CryptoContext<DCRTPoly> context) {
+                                       const CryptoContext<DCRTPoly> &context) {
 
   // Compute difference: diff = a - b
   auto diff = context->EvalSub(a, b);
@@ -61,7 +67,13 @@ Ciphertext<DCRTPoly> homomorphicMaxTwo(const Ciphertext<DCRTPoly> &a,
 
   // |diff| ≈ 2*max(0,diff) + 2*max(0,-diff) - diff
   auto abs_diff_part1 = context->EvalMult(2.0, relu_diff);
+  if (abs_diff_part1->GetLevel() > 0) {
+    context->IntMPBootAdjustScale(abs_diff_part1);
+  }
   auto abs_diff_part2 = context->EvalMult(2.0, relu_neg_diff);
+  if (abs_diff_part2->GetLevel() > 0) {
+    context->IntMPBootAdjustScale(abs_diff_part2);
+  }
   auto abs_diff = context->EvalAdd(abs_diff_part1, abs_diff_part2);
   abs_diff = context->EvalSub(abs_diff, diff);
 
@@ -69,7 +81,11 @@ Ciphertext<DCRTPoly> homomorphicMaxTwo(const Ciphertext<DCRTPoly> &a,
   auto sum_ab = context->EvalAdd(a, b);
   auto numerator = context->EvalAdd(sum_ab, abs_diff);
 
-  return context->EvalMult(numerator, 0.5);
+  auto mult = context->EvalMult(numerator, 0.5);
+  if (mult->GetLevel() > 0) {
+    context->IntMPBootAdjustScale(mult);
+  }
+  return mult;
 }
 
 /**
@@ -78,7 +94,7 @@ Ciphertext<DCRTPoly> homomorphicMaxTwo(const Ciphertext<DCRTPoly> &a,
  */
 Ciphertext<DCRTPoly>
 findHomomorphicMax(const std::vector<Ciphertext<DCRTPoly>> &ciphertexts,
-                   CryptoContext<DCRTPoly> context) {
+                   const CryptoContext<DCRTPoly> &context) {
 
   if (ciphertexts.empty()) {
     throw std::invalid_argument("Input vector cannot be empty");
@@ -95,21 +111,21 @@ findHomomorphicMax(const std::vector<Ciphertext<DCRTPoly>> &ciphertexts,
   size_t round = 1;
   while (workingSet.size() > 1) {
     std::cout << "[findHomomorphicMax] Round " << round
-              << ": workingSet size = " << workingSet.size() << std::endl;
+              << ": workingSet size = " << workingSet.size() << '\n';
     std::vector<Ciphertext<DCRTPoly>> nextRound;
 
     // Process pairs
     for (size_t i = 0; i < workingSet.size(); i += 2) {
       if (i + 1 < workingSet.size()) {
         std::cout << "[findHomomorphicMax]   Comparing indices " << i << " and "
-                  << (i + 1) << std::endl;
+                  << (i + 1) << '\n';
         // Compare two ciphertexts and get the maximum
         auto maxCipher =
             homomorphicMaxTwo(workingSet[i], workingSet[i + 1], context);
         nextRound.push_back(maxCipher);
       } else {
         std::cout << "[findHomomorphicMax]   Carrying forward index " << i
-                  << std::endl;
+                  << '\n';
         // Odd element, carry forward
         nextRound.push_back(workingSet[i]);
       }
@@ -185,156 +201,231 @@ bool setupUserSessions(InMemoryStore &store,
 
 /**
  * Computes encrypted dot products in parallel using rotation-based summation
+ * Now supports batching to handle large vectors efficiently
  */
 vector<Ciphertext<DCRTPoly>> computeEncryptedDotProducts(
     CryptoContext<DCRTPoly> cc, const Plaintext &encQuery,
     const std::vector<Ciphertext<DCRTPoly>> &sessionVec) {
   vector<Ciphertext<DCRTPoly>> encProducts(sessionVec.size());
 
-  tbb::parallel_for(tbb::blocked_range<size_t>(0, sessionVec.size()),
-                    [&](const tbb::blocked_range<size_t> &range) {
-                      for (size_t i = range.begin(); i < range.end(); ++i) {
-                        const auto &session = sessionVec[i];
+  // Process in batches to avoid memory issues with large vectors
+  size_t totalVectors = sessionVec.size();
+  size_t numBatches = (totalVectors + BATCH_SIZE - 1) / BATCH_SIZE;
 
-                        // Multiply query with encrypted database vector
-                        auto product = cc->EvalMult(encQuery, session);
+  std::cout << "[computeEncryptedDotProducts] Processing " << totalVectors
+            << " vectors in " << numBatches << " batches of size " << BATCH_SIZE
+            << '\n';
 
-                        // Sum all elements using rotation (log(n) rotations for
-                        // n elements)
-                        for (int rotationStep = 1;
-                             rotationStep < static_cast<int>(VECTOR_DIM);
-                             rotationStep *= 2) {
-                          auto rotated = cc->EvalRotate(product, rotationStep);
-                          product = cc->EvalAdd(product, rotated);
+  for (size_t batchIdx = 0; batchIdx < numBatches; ++batchIdx) {
+    size_t startIdx = batchIdx * BATCH_SIZE;
+    size_t endIdx = std::min(startIdx + BATCH_SIZE, totalVectors);
+
+    std::cout << "[computeEncryptedDotProducts] Processing batch "
+              << (batchIdx + 1) << "/" << numBatches << " (indices " << startIdx
+              << "-" << (endIdx - 1) << ")" << '\n';
+
+    // Process current batch in parallel
+    tbb::parallel_for(tbb::blocked_range<size_t>(startIdx, endIdx),
+                      [&](const tbb::blocked_range<size_t> &range) {
+                        for (size_t i = range.begin(); i < range.end(); ++i) {
+                          const auto &session = sessionVec[i];
+
+                          // Multiply query with encrypted database vector
+                          auto product = cc->EvalMult(encQuery, session);
+                          if (product->GetLevel() > 0) {
+                            cc->IntMPBootAdjustScale(product);
+                          }
+
+                          // Sum all elements using rotation (log(n) rotations
+                          // for n elements)
+                          for (int rotationStep = 1;
+                               rotationStep < static_cast<int>(VECTOR_DIM);
+                               rotationStep *= 2) {
+                            auto rotated =
+                                cc->EvalRotate(product, rotationStep);
+                            product = cc->EvalAdd(product, rotated);
+                          }
+
+                          encProducts[i] = product;
                         }
-
-                        encProducts[i] = product;
-                      }
-                    });
+                      });
+  }
 
   return encProducts;
 }
 
 /**
- * Attempts to find the best match using homomorphic maximum computation
- * Collects all EvalSum results and uses findHomomorphicMax to find the maximum
+ * Attempts to find the best match using batched homomorphic maximum computation
+ * Processes vectors in batches to avoid memory issues and computes global
+ * maximum
  */
 pair<double, string>
 findBestMatch(InMemoryStore &store,
               const vector<Ciphertext<DCRTPoly>> &encProducts,
               const string &userId) {
-  std::vector<Ciphertext<DCRTPoly>> encryptedSums(encProducts.size());
+  size_t totalVectors = encProducts.size();
+  size_t numBatches = (totalVectors + BATCH_SIZE - 1) / BATCH_SIZE;
 
-  // Parallel computation of EvalSum for each encrypted product
-  // Instead of decrypting each vector individually, we collect all the sums
-  // and then use homomorphic maximum to find the best match
-  tbb::parallel_for(
-      tbb::blocked_range<size_t>(0, encProducts.size()),
-      [&](const tbb::blocked_range<size_t> &range) {
-        for (size_t i = range.begin(); i < range.end(); ++i) {
-          try {
-            // Create a mask plaintext {1, 0, 0, ..., 0}
-            std::vector<double> mask(VECTOR_DIM, 0.0);
-            mask[0] = 1.0;
-            auto maskPlain =
-                store.cryptoContext_->MakeCKKSPackedPlaintext(mask);
+  std::cout << "[findBestMatch] Processing " << totalVectors << " vectors in "
+            << numBatches << " batches for maximum computation" << '\n';
 
-            // Multiply the encrypted vector with the mask to zero out all but
-            // the first slot
-            auto maskedCipher =
-                store.cryptoContext_->EvalMult(encProducts[i], maskPlain);
+  std::vector<Ciphertext<DCRTPoly>> batchMaxima;
 
-            // Compute sum and store the encrypted result
-            auto sum = store.cryptoContext_->EvalSum(maskedCipher, VECTOR_DIM);
-            encryptedSums[i] = sum;
-          } catch (const std::exception &e) {
-            std::cerr << "[ERROR] EvalSum computation failed for vector " << i
-                      << ": " << e.what() << "\n";
-            // Create a zero ciphertext as fallback
-            continue;
+  // Process each batch to find the maximum within that batch
+  for (size_t batchIdx = 0; batchIdx < numBatches; ++batchIdx) {
+    size_t startIdx = batchIdx * BATCH_SIZE;
+    size_t endIdx = std::min(startIdx + BATCH_SIZE, totalVectors);
+
+    std::cout << "[findBestMatch] Processing batch " << (batchIdx + 1) << "/"
+              << numBatches << " (indices " << startIdx << "-" << (endIdx - 1)
+              << ")" << '\n';
+
+    std::vector<Ciphertext<DCRTPoly>> batchSums(endIdx - startIdx);
+
+    // Compute EvalSum for each vector in the current batch
+    tbb::parallel_for(
+        tbb::blocked_range<size_t>(startIdx, endIdx),
+        [&](const tbb::blocked_range<size_t> &range) {
+          for (size_t i = range.begin(); i < range.end(); ++i) {
+            try {
+              // Create a mask plaintext {1, 0, 0, ..., 0}
+              std::vector<double> mask(VECTOR_DIM, 0.0);
+              mask[0] = 1.0;
+              auto maskPlain =
+                  store.cryptoContext_->MakeCKKSPackedPlaintext(mask);
+
+              // Multiply the encrypted vector with the mask to zero out all but
+              // the first slot
+              auto maskedCipher =
+                  store.cryptoContext_->EvalMult(encProducts[i], maskPlain);
+              if (maskedCipher->GetLevel() > 0) {
+                store.cryptoContext_->IntMPBootAdjustScale(maskedCipher);
+              }
+
+              // Compute sum and store the encrypted result
+              auto sum =
+                  store.cryptoContext_->EvalSum(maskedCipher, VECTOR_DIM);
+              batchSums[i - startIdx] = sum;
+            } catch (const std::exception &e) {
+              std::cerr << "[ERROR] EvalSum computation failed for vector " << i
+                        << ": " << e.what() << "\n";
+              // Create a zero ciphertext as fallback
+              continue;
+            }
           }
-        }
-      });
+        });
 
-  // Use homomorphic maximum to find the best match
-  auto maxCipher = findHomomorphicMax(encryptedSums, store.cryptoContext_);
+    // Find the maximum within this batch using homomorphic max
+    if (!batchSums.empty()) {
+      auto batchMax = findHomomorphicMax(batchSums, store.cryptoContext_);
+      batchMaxima.push_back(batchMax);
+      std::cout << "[findBestMatch] Batch " << (batchIdx + 1)
+                << " maximum computed" << '\n';
+    }
+  }
 
-  // Decrypt the final maximum result
+  // If we have multiple batch maxima, find the global maximum
+  Ciphertext<DCRTPoly> globalMax;
+  if (batchMaxima.size() == 1) {
+    globalMax = batchMaxima[0];
+    std::cout
+        << "[findBestMatch] Single batch, using batch maximum as global maximum"
+        << '\n';
+  } else if (batchMaxima.size() > 1) {
+    std::cout << "[findBestMatch] Computing global maximum from "
+              << batchMaxima.size() << " batch maxima" << '\n';
+    globalMax = findHomomorphicMax(batchMaxima, store.cryptoContext_);
+  } else {
+    std::cerr << "[ERROR] No batch maxima computed" << '\n';
+    return {-1.0, "error"};
+  }
+
+  // Decrypt the final global maximum result
   try {
-    auto decryptedResult = store.MultiPartyDecrypt8(userId, maxCipher);
+    auto decryptedResult = store.MultiPartyDecrypt8(userId, globalMax);
     auto values = decryptedResult->GetRealPackedValue();
     double maxSimilarity = values.empty() ? -1.0 : values[0];
+
+    std::cout << "[findBestMatch] Global maximum similarity: " << maxSimilarity
+              << '\n';
 
     // Since we can't directly get the index from homomorphic max,
     // we'll return the maximum similarity value and a placeholder for the index
     // In a real implementation, you might want to track indices differently
-    return {maxSimilarity, "homomorphic_max_result"};
+    return {maxSimilarity, "batched_homomorphic_max_result"};
   } catch (const std::exception &e) {
-    std::cerr << "[ERROR] Decryption of maximum result failed: " << e.what()
-              << "\n";
+    std::cerr << "[ERROR] Decryption of global maximum result failed: "
+              << e.what() << "\n";
     return {-1.0, "error"};
   }
 }
 
 int main(int argc, char *argv[]) {
-  // Validate input and open file
-  auto [fileValid, fileStream] = validateAndOpenFile(argc, argv);
-  if (!fileValid) {
+  try {
+    // Validate input and open file
+    auto [fileValid, fileStream] = validateAndOpenFile(argc, argv);
+    if (!fileValid) {
+      return EXIT_ERROR;
+    }
+
+    cout << "Setting up cryptographic parameters...\n";
+    CryptoContext<DCRTPoly> cryptoContext = InitCKKSContext();
+    InMemoryStore store(cryptoContext);
+
+    // Read input parameters
+    size_t numVectors;
+    size_t userSecretIndex;
+    fileStream >> numVectors >> userSecretIndex;
+
+    // Read and process input data
+    cout << "Reading query vector...\n";
+    auto queryVector = readAndNormalizeQueryVector(fileStream);
+
+    cout << "Reading database vectors...\n";
+    auto dbVectors = readDatabaseVectors(fileStream, numVectors);
+    fileStream.close();
+
+    // Setup encrypted sessions
+    cout << "Setting up user sessions and encrypting vectors...\n";
+    if (!setupUserSessions(store, dbVectors, userSecretIndex)) {
+      return EXIT_ERROR;
+    }
+
+    // Prepare encrypted query
+    auto encryptedQuery = cryptoContext->MakeCKKSPackedPlaintext(queryVector);
+    string targetUserId = "user_" + to_string(userSecretIndex);
+
+    auto [success, sessionVectors] = store.GetEncryptedVectors(targetUserId);
+    if (!success) {
+      cerr << "[ERROR] Failed to get encrypted vectors for " << targetUserId
+           << "\n";
+      return EXIT_ERROR;
+    }
+    cout << "Beginning similarity search...\n";
+
+    // Time the search operation
+    auto searchStartTime = chrono::high_resolution_clock::now();
+
+    // Compute encrypted dot products in parallel
+    auto encryptedProducts = computeEncryptedDotProducts(
+        cryptoContext, encryptedQuery, *sessionVectors);
+
+    // Find the best matching vector using 8-party decryption
+    auto [bestSimilarity, bestUserId] =
+        findBestMatch(store, encryptedProducts, targetUserId);
+
+    auto searchEndTime = chrono::high_resolution_clock::now();
+    auto searchDuration =
+        chrono::duration<double, milli>(searchEndTime - searchStartTime);
+
+    // Output results
+    cout << "Maximum cosine similarity: " << bestSimilarity
+         << " (User: " << bestUserId << ")\n";
+    cout << "Search completed in: " << searchDuration.count() << " ms\n";
+
+    return 0;
+  } catch (const std::exception &e) {
+    std::cerr << "[ERROR] Program failed with exception: " << e.what() << "\n";
     return EXIT_ERROR;
   }
-
-  cout << "Setting up cryptographic parameters...\n";
-  CryptoContext<DCRTPoly> cryptoContext = InitCKKSContext();
-  InMemoryStore store(cryptoContext);
-
-  // Read input parameters
-  size_t numVectors;
-  size_t userSecretIndex;
-  fileStream >> numVectors >> userSecretIndex;
-
-  // Read and process input data
-  cout << "Reading query vector...\n";
-  auto queryVector = readAndNormalizeQueryVector(fileStream);
-
-  cout << "Reading database vectors...\n";
-  auto dbVectors = readDatabaseVectors(fileStream, numVectors);
-  fileStream.close();
-
-  // Setup encrypted sessions
-  cout << "Setting up user sessions and encrypting vectors...\n";
-  if (!setupUserSessions(store, dbVectors, userSecretIndex)) {
-    return EXIT_ERROR;
-  }
-
-  // Prepare encrypted query
-  auto encryptedQuery = cryptoContext->MakeCKKSPackedPlaintext(queryVector);
-  string targetUserId = "user_" + to_string(userSecretIndex);
-
-  cout << "Beginning similarity search...\n";
-  auto [success, sessionVectors] = store.GetEncryptedVectors(targetUserId);
-  if (!success) {
-    cerr << "[ERROR] Failed to get encrypted vectors for " << targetUserId
-         << "\n";
-    return EXIT_ERROR;
-  }
-
-  // Time the search operation
-  auto searchStartTime = chrono::high_resolution_clock::now();
-
-  // Compute encrypted dot products in parallel
-  auto encryptedProducts = computeEncryptedDotProducts(
-      cryptoContext, encryptedQuery, *sessionVectors);
-
-  // Find the best matching vector using 8-party decryption
-  auto [bestSimilarity, bestUserId] =
-      findBestMatch(store, encryptedProducts, targetUserId);
-
-  auto searchEndTime = chrono::high_resolution_clock::now();
-  auto searchDuration =
-      chrono::duration<double, milli>(searchEndTime - searchStartTime);
-
-  // Output results
-  cout << "Maximum cosine similarity: " << bestSimilarity
-       << " (User: " << bestUserId << ")\n";
-  cout << "Search completed in: " << searchDuration.count() << " ms\n";
 }
