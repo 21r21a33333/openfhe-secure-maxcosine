@@ -16,21 +16,92 @@ This project implements a privacy-first encrypted similarity search system using
 
 ### Privacy Model
 
-The system implements a two-party multiparty computation protocol:
+The system implements an 8-party multiparty computation protocol:
 
-- **Client**: Generates initial key pair and holds client secret key share
-- **Server**: Generates server key share and performs encrypted computations
-- **Joint Public Key**: Used for encryption, requires both parties to decrypt
-- **No Single Point of Failure**: Neither party can decrypt data independently
+- **8-Party Key Generation**: Sequential multiparty key generation across 8 parties
+- **Joint Public Key**: Generated collaboratively, used for encryption operations
+- **Distributed Secret Keys**: Each party holds their own secret key share
+- **Server Role**: Holds the final party's secret key and performs encrypted computations
+- **No Single Point of Failure**: No single party can decrypt data independently
 
-### Encrypted Maximum Computation
+### Current Implementation Flow
 
-The system uses a novel approach to find the maximum cosine similarity:
+#### 1. **Initialization Phase**
 
-1. Computes all encrypted dot products in parallel
-2. Uses multiparty decryption to reveal only the maximum similarity
-3. Implements threshold-based uniqueness checking
-4. Maintains privacy by never decrypting individual similarities
+```
+- Load input data (number of vectors, user secret index, query vector, database vectors)
+- Initialize CKKS cryptographic context with optimized parameters
+- Create InMemoryStore instance for session management
+```
+
+#### 2. **8-Party Session Setup**
+
+```
+- Create user session with ID "user_{userSecretIndex}"
+- Generate 8-party key pairs sequentially:
+  * Party 0: Initial key generation
+  * Parties 1-7: Sequential multiparty key generation
+- Generate evaluation keys (multiplication, rotation, sum)
+- Store joint public key and server secret key
+```
+
+#### 3. **Database Encryption**
+
+```
+- Normalize all database vectors for cosine similarity
+- Encrypt vectors under joint public key
+- Store encrypted vectors in user session
+```
+
+#### 4. **Encrypted Similarity Computation**
+
+```
+- Normalize query vector
+- Compute encrypted dot products in batches (BATCH_SIZE = 10):
+  * Multiply query with each encrypted database vector
+  * Use rotation-based summation (log(n) rotations for n elements)
+  * Process vectors in parallel using Intel TBB
+```
+
+#### 5. **Homomorphic Maximum Finding**
+
+```
+- Process dot products in batches to find batch maxima
+- Use Chebyshev polynomial approximation for ReLU function
+- Implement tournament-style maximum reduction:
+  * max(a,b) = (a + b + |a-b|) / 2
+  * |x| ≈ 2*ReLU(x) + 2*ReLU(-x) - x
+- Find global maximum across all batch maxima
+```
+
+#### 6. **8-Party Decryption**
+
+```
+- Perform partial decryption for parties 0-6
+- Party 7 performs lead decryption
+- Fuse all partial decryptions to reveal final result
+- Extract maximum cosine similarity value
+```
+
+### Key Technical Components
+
+#### **Batch Processing Architecture**
+
+- **BATCH_SIZE**: 10 vectors per batch (configurable in `config.h`)
+- **Memory Management**: Prevents memory overflow for large datasets
+- **Parallel Processing**: Intel TBB for concurrent vector operations
+
+#### **Homomorphic Operations**
+
+- **Chebyshev Approximation**: ReLU function for maximum computation
+- **Rotation-Based Summation**: O(log n) complexity for dot products
+- **Scale Management**: Automatic rescaling with `IntMPBootAdjustScale`
+
+#### **Privacy Guarantees**
+
+- **8-Party Protocol**: No single party can decrypt independently
+- **Joint Key Generation**: Collaborative key creation prevents key compromise
+- **Encrypted Computation**: All operations performed on encrypted data
 
 ## Build Instructions
 
@@ -40,9 +111,9 @@ The system uses a novel approach to find the maximum cosine similarity:
 - **Compiler**: Clang 17.0+ with C++17 support
 - **Dependencies**:
   - OpenFHE library (installed via package manager)
-  - Intel TBB (Threading Building Blocks)
+  - Intel TBB (Threading Building Blocks) v1.0+
   - CMake 3.16.3+
-  - Node.js (for data generation scripts)
+  - Node.js (for data generation and testing scripts)
 
 ### Installation Steps
 
@@ -50,17 +121,27 @@ The system uses a novel approach to find the maximum cosine similarity:
 
    ```bash
    # Install OpenFHE using your preferred method
-   # Ensure it's installed with CKKS support
+   # Ensure it's installed with CKKS support and multiparty features
+   # Version compatibility: OpenFHE v1.1.0+
    ```
 
 2. **Install Intel TBB**:
 
    ```bash
-   # Download and build Intel TBB
-   # Update paths in CMakeLists.txt if needed
+   # Download and build Intel TBB v1.0+
+   # Or use package manager: brew install tbb
    ```
 
-3. **Build the Project**:
+3. **Configure TBB Paths** (if needed):
+
+   Update `CMakeLists.txt` with your TBB installation paths:
+
+   ```cmake
+   set(TBB_INCLUDE_DIR "/path/to/your/tbb/include")
+   set(TBB_LIB_DIR "/path/to/your/tbb/lib")
+   ```
+
+4. **Build the Project**:
    ```bash
    mkdir build
    cd build
@@ -68,12 +149,22 @@ The system uses a novel approach to find the maximum cosine similarity:
    make
    ```
 
-### Environment Configuration
+### Current Environment Configuration
 
-The project is configured for macOS with the following paths (update as needed):
+The project is configured for macOS with the following paths:
 
-- TBB Include: `/Users/diwakarmatsaa/oneTBB/include`
-- TBB Library: `/Users/diwakarmatsaa/oneTBB/build/appleclang_17.0_cxx11_64_relwithdebinfo`
+- **TBB Include**: `/Users/diwakarmatsaa/oneTBB/include`
+- **TBB Library**: `/Users/diwakarmatsaa/oneTBB/build/appleclang_17.0_cxx11_64_relwithdebinfo`
+- **OpenFHE**: Auto-detected via CMake `find_package(OpenFHE)`
+
+### Build Configuration
+
+The CMake configuration automatically:
+
+- Links against OpenFHE shared libraries
+- Enables C++17 standard
+- Configures compiler flags from OpenFHE
+- Links Intel TBB for parallel processing
 
 ## Usage
 
@@ -87,14 +178,18 @@ The project is configured for macOS with the following paths (update as needed):
 
    This creates a dataset with 1000 vectors, where vector 64 matches the query.
 
-2. **Run the Program**:
+2. **Build and Run the Program**:
 
    ```bash
-   cd build
+   # Build (if not already built)
+   mkdir -p build && cd build
+   cmake .. && make
+
+   # Run the program
    ./Main ../test_data.dat
    ```
 
-3. **Run Comprehensive Tests**:
+3. **Run Comprehensive Performance Tests**:
    ```bash
    node scripts/metrics_test.js
    ```
@@ -112,41 +207,81 @@ The input file format is:
 ...
 ```
 
+**Example**:
+
+```
+1000
+64
+1 1 1 1 1 1 1 1 ... (512 ones)
+-45 23 -12 67 ... (512 random values)
+...
+```
+
 ### Output
 
 The program outputs:
 
-- Maximum cosine similarity score
-- User ID of the best match
-- Execution time in milliseconds
+- **Maximum cosine similarity score**: The highest similarity found
+- **User ID**: Identifier for the best match (currently shows batch processing info)
+- **Execution time**: Total search time in milliseconds
+- **Debug information**: Batch processing details, party generation status
+
+**Example Output**:
+
+```
+Setting up cryptographic parameters...
+Creating session for user_64...
+[Store] Processing party 2 of 8
+[Store] Processing party 3 of 8
+...
+[Store] Successfully created 8-party session for user_64
+Reading query vector...
+Reading database vectors...
+Setting up user sessions and encrypting vectors...
+Beginning similarity search...
+[computeEncryptedDotProducts] Processing 1000 vectors in 100 batches of size 10
+[findBestMatch] Processing 1000 vectors in 100 batches for maximum computation
+[findHomomorphicMax] Round 1: workingSet size = 100
+...
+Maximum cosine similarity: 0.999999 (User: batched_homomorphic_max_result)
+Search completed in: 1234.56 ms
+```
 
 ## CKKS Parameters
 
-### Cryptographic Configuration
+### Current Cryptographic Configuration
 
-The system uses the following CKKS parameters optimized for precision and security:
+The system uses the following CKKS parameters optimized for homomorphic maximum computation:
 
 ```cpp
 // From include/config.h
-const size_t MULT_DEPTH = 3;        // Multiplicative depth
+const size_t MULT_DEPTH = 48;       // Multiplicative depth (increased for complex operations)
 const size_t VECTOR_DIM = 512;      // Vector dimension
-const size_t SCALE_MOD = 50;        // Scaling modulus size (bits)
+const size_t SCALE_MOD = 40;        // Scaling modulus size (bits)
+const size_t FIRST_MOD_SIZE = 60;   // First modulus size for parameter balance
+const size_t BATCH_SIZE = 10;       // Batch size for processing vectors
 ```
 
 ### Detailed Parameters
 
 - **Security Level**: HEStd_128_classic (128-bit security)
-- **Ring Dimension**: 8192 (default for CKKS)
-- **Scaling Modulus Size**: 50 bits
-- **Multiplicative Depth**: 3 levels
-- **Batch Size**: 4096 (ring_dimension / 2)
+- **Ring Dimension**: Auto-selected by OpenFHE based on security requirements
+- **Scaling Modulus Size**: 40 bits (reduced for better tower compatibility)
+- **First Modulus Size**: 60 bits
+- **Multiplicative Depth**: 48 levels (increased for Chebyshev approximations)
+- **Batch Size**: 10 vectors per batch (memory management)
+- **Scaling Technique**: FLEXIBLEAUTOEXT
+- **Key Switch Technique**: HYBRID
+- **Secret Key Distribution**: UNIFORM_TERNARY
 
 ### Parameter Justification
 
-- **Multiplicative Depth (3)**: Sufficient for dot product computation and rescaling
-- **Scaling Modulus (50 bits)**: Balances precision and noise growth
-- **Ring Dimension (8192)**: Provides adequate security and batch processing
+- **Multiplicative Depth (48)**: Required for Chebyshev polynomial approximations and complex homomorphic operations
+- **Scaling Modulus (40 bits)**: Reduced for better compatibility with available polynomial towers
+- **First Modulus Size (60 bits)**: Provides better parameter balance for multiparty operations
+- **Batch Size (10)**: Prevents memory overflow during large dataset processing
 - **Vector Dimension (512)**: Matches the assignment requirements
+- **8-Party Protocol**: Enhanced security through distributed key generation
 
 ## Accuracy and Precision
 
@@ -255,41 +390,63 @@ class ScalableSimilaritySearch {
 ```
 merkel/
 ├── src/
-│   ├── main.cpp              # Main application entry point
-│   └── openFHE_impl.cpp      # OpenFHE utility functions
+│   ├── main.cpp              # Main application with 8-party similarity search
+│   └── openFHE_impl.cpp      # OpenFHE utility functions and vector operations
 ├── include/
-│   ├── config.h              # Configuration constants
-│   ├── openFHE_lib.h         # OpenFHE interface
-│   └── store.h               # Encrypted storage implementation
+│   ├── config.h              # Configuration constants (MULT_DEPTH=48, BATCH_SIZE=10)
+│   ├── openFHE_lib.h         # OpenFHE interface declarations
+│   └── store.h               # 8-party encrypted storage and session management
 ├── scripts/
-│   ├── generate_data.js      # Test data generation
-│   └── metrics_test.js       # Performance testing
-├── build/                    # Build directory
-├── CMakeLists.txt           # Build configuration
-└── README.md                # This file
+│   ├── generate_data.js      # Streaming test data generation (supports large datasets)
+│   └── metrics_test.js       # Comprehensive performance testing (1K to 1M vectors)
+├── build/                    # Build directory with CMake artifacts
+├── CMakeLists.txt           # Build configuration with OpenFHE and TBB linking
+├── test_data.dat            # Sample test dataset (1000 vectors)
+├── test_large.dat           # Large test dataset
+├── test_results.log         # Performance test results
+└── README.md                # This documentation file
 ```
+
+### Key Implementation Files
+
+- **`main.cpp`**: Implements the complete 8-party similarity search workflow including Chebyshev approximation for homomorphic maximum computation
+- **`store.h`**: Contains the 8-party key generation protocol and encrypted vector management
+- **`openFHE_impl.cpp`**: Provides utility functions for vector normalization, binary rotation, and CKKS operations
+- **`config.h`**: Centralized configuration with optimized parameters for homomorphic maximum computation
 
 ## Testing and Validation
 
 ### Test Suite
 
-The project includes comprehensive testing:
+The project includes comprehensive testing with streaming support for large datasets:
 
-1. **Unit Tests**: Individual component testing
-2. **Integration Tests**: End-to-end workflow testing
-3. **Performance Tests**: Scalability and timing analysis
-4. **Accuracy Tests**: Precision verification
+1. **Performance Tests**: Automated testing from 1K to 1M vectors
+2. **Data Generation Tests**: Streaming data generation for large datasets
+3. **Integration Tests**: End-to-end 8-party similarity search workflow
+4. **Accuracy Tests**: Built-in precision verification with plaintext comparison
 
 ### Running Tests
 
 ```bash
-# Run all tests
+# Run comprehensive performance tests (1K, 10K, 100K, 1M vectors)
 node scripts/metrics_test.js
 
-# Run specific test
-node ./scripts/generate_data.js test_data.dat 1000 64
+# Run specific test with custom parameters
+node ./scripts/generate_data.js test_data.dat 10000 42
 cd build && ./Main ../test_data.dat
+
+# Test large dataset generation (supports up to 1M vectors)
+node ./scripts/generate_data.js large_test.dat 100000 1234
 ```
+
+### Test Output
+
+Tests generate detailed logs in `test_results.log` including:
+
+- Batch processing performance metrics
+- 8-party key generation timing
+- Homomorphic maximum computation details
+- Memory usage and execution times
 
 ## Troubleshooting
 
