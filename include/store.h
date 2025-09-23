@@ -55,12 +55,13 @@ InitCKKSContext(usint multiplicativeDepth = MULT_DEPTH,
   parameters.SetFirstModSize(FIRST_MOD_SIZE);
   parameters.SetKeySwitchTechnique(KeySwitchTechnique::HYBRID);
   parameters.SetBatchSize(VECTOR_DIM);
-  
+
   // Set noise estimate for better precision
   parameters.SetNoiseEstimate(3.2);
-  
-  // Let OpenFHE choose appropriate ring dimension based on security requirements
-  
+
+  // Let OpenFHE choose appropriate ring dimension based on security
+  // requirements
+
   auto compressionLevel = COMPRESSION_LEVEL::COMPACT;
   parameters.SetInteractiveBootCompressionLevel(compressionLevel);
 
@@ -176,8 +177,9 @@ public:
           partyKeyPairs[0].secretKey, partyKeyPairs[0].secretKey);
 
       // Generate rotation keys for Party 0
-      cryptoContext_->EvalRotateKeyGen(partyKeyPairs[0].secretKey, rotationFactors);
-      
+      cryptoContext_->EvalRotateKeyGen(partyKeyPairs[0].secretKey,
+                                       rotationFactors);
+
       // Generate sum evaluation keys for Party 0
       cryptoContext_->EvalSumKeyGen(partyKeyPairs[0].secretKey);
       auto evalSumKeys = std::make_shared<std::map<usint, EvalKey<DCRTPoly>>>(
@@ -480,6 +482,23 @@ public:
    */
   bool HasSession(const std::string &userId) const {
     return sessions_.find(userId) != sessions_.end();
+  }
+
+  /**
+   * Gets a key pair for a user (for bootstrapping setup)
+   *
+   * @param userId User identifier
+   * @return Pair of (success status, key pair)
+   */
+  std::pair<bool, std::pair<PrivateKey<DCRTPoly>, PublicKey<DCRTPoly>>>
+  GetKeyPair(const std::string &userId) const {
+    auto sessionIt = sessions_.find(userId);
+    if (sessionIt == sessions_.end()) {
+      return {false, {PrivateKey<DCRTPoly>(), PublicKey<DCRTPoly>()}};
+    }
+
+    return {true,
+            {sessionIt->second.serverSecret, sessionIt->second.jointPublic}};
   }
 };
 
